@@ -1,0 +1,27 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run Web dev server",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"dev:web"
+			],
+			"isBackground": true,
+			"group": "build"
+		},
+		{
+			"label": "Run API dev server",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"dev:api"
+			],
+			"isBackground": true,
+			"group": "build"
+		}
+	]
+}
