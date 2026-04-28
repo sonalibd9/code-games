@@ -67,6 +67,29 @@ npm run dev:web
 Frontend: `http://localhost:5173`
 Backend: `http://localhost:4000`
 
+## Run With Podman
+
+This repo includes container definitions for both apps plus a root `docker-compose.yaml` that works with `podman compose`.
+
+Build and start:
+
+```bash
+podman compose up --build
+```
+
+Services:
+
+- Web: `http://localhost:8080`
+- API: `http://localhost:4000`
+
+Stop and remove containers:
+
+```bash
+podman compose down
+```
+
+The compose stack persists uploaded API files in the named volume `api-uploads`.
+
 ## API Endpoints (MVP)
 
 - `POST /api/auth/login`

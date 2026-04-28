@@ -2,9 +2,10 @@
 FROM node:20-alpine AS builder
 WORKDIR /app
 
-# Copy package files and install all deps (including devDeps for tsc)
-COPY package.json package-lock.json* ./
-RUN npm ci --registry https://registry.npmjs.org
+# Copy package manifest and install all deps (including devDeps for tsc)
+COPY package.json ./
+COPY .npmrc ./
+RUN npm install && rm -f .npmrc
 
 # Copy source and compile TypeScript
 COPY tsconfig.json ./
@@ -16,8 +17,9 @@ FROM node:20-alpine AS runtime
 WORKDIR /app
 
 # Only copy production deps
-COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev --registry https://registry.npmjs.org
+COPY package.json ./
+COPY .npmrc ./
+RUN npm install --omit=dev && rm -f .npmrc
 
 # Copy compiled output from builder
 COPY --from=builder /app/dist ./dist

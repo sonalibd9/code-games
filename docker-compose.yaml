@@ -1,0 +1,29 @@
+services:
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      JWT_SECRET: dev-secret-change-me
+      CORS_ORIGIN: http://localhost:8080
+      MAX_UPLOAD_MB: 20
+    ports:
+      - "4000:4000"
+    volumes:
+      - api-uploads:/app/uploads
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ""
+    depends_on:
+      - api
+    ports:
+      - "8080:80"
+
+volumes:
+  api-uploads:
