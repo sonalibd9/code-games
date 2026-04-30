@@ -65,27 +65,57 @@ router.post('/:requirementId', requireAuth, requireRole('client'), upload.single
   }
 
   const isTrialBalance = requirement.title.toLowerCase().includes('trial balance');
-  if (isTrialBalance) {
-    const uploader = users.find((user) => user.id === req.user?.sub);
-    const client = clients.find((item) => item.id === requirement.clientId);
+  const uploader = users.find((user) => user.id === req.user?.sub);
+  const client = clients.find((item) => item.id === requirement.clientId);
 
-    const notification: Notification = {
-      id: randomUUID(),
-      type: 'tb-uploaded',
-      clientId: requirement.clientId,
-      message: `Trial balance uploaded by ${uploader?.email ?? 'client'} for ${client?.name ?? requirement.clientId}. Requirement list can now be shared.`,
-      createdAt: new Date().toISOString(),
-    };
+  const notification: Notification = {
+    id: randomUUID(),
+    type: isTrialBalance ? 'trial-balance-uploaded' : 'requirement-uploaded',
+    clientId: requirement.clientId,
+    message: isTrialBalance
+      ? `${uploader?.email ?? 'client'} uploaded trial balance "${submission.originalName}" for ${client?.name ?? requirement.clientId}.`
+      : `${uploader?.email ?? 'client'} uploaded "${submission.originalName}" for requirement "${requirement.title}".`,
+    createdAt: submission.uploadedAt,
+    uploadedAt: submission.uploadedAt,
+    uploadedByUserId: submission.uploadedByUserId,
+    uploadedByEmail: uploader?.email ?? 'client',
+    fileName: submission.originalName,
+    requirementId: requirement.id,
+    requirementTitle: requirement.title,
+    target: isTrialBalance
+      ? { page: 'trial-balance' }
+      : { page: 'portal', requirementId: requirement.id },
+  };
 
-    notifications.unshift(notification);
-    broadcastNotification(notification);
-  }
+  notifications.unshift(notification);
+  broadcastNotification(notification);
 
   res.status(201).json(submission);
 });
 
 router.get('/', requireAuth, requireRole('auditor'), (_req, res) => {
   res.json(submissions);
+});
+
+router.get('/download/:fileName', requireAuth, requireRole('auditor'), (req: AuthenticatedRequest, res) => {
+  const fileName = req.params.fileName;
+  const file = path.resolve(__dirname, '../../uploads', fileName);
+
+  // Check if file exists
+  const submission = submissions.find((s) => s.storedName === fileName);
+  if (!submission) {
+    res.status(404).json({ message: 'File not found.' });
+    return;
+  }
+
+  res.download(file, submission.originalName, (err) => {
+    if (err) {
+      console.error('Download error:', err);
+      if (!res.headersSent) {
+        res.status(500).json({ message: 'Error downloading file.' });
+      }
+    }
+  });
 });
 
 export default router;

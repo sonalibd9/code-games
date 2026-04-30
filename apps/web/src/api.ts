@@ -1,11 +1,22 @@
 import { AuthUser, ClientEntity, Notification, PbcItem, PbcItemFile, PbcList, Requirement, Submission } from './types';
 
-export const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:4000';
+export const API_URL = (import.meta.env.VITE_API_URL ?? 'http://localhost:4000').replace(/\/$/, '');
 
 type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
 
+export function resolveApiUrl(path: string): string {
+  const sanitizedPath = (path ?? '').trim().replace(/^\/(https?:\/\/)/i, '$1');
+
+  if (/^https?:\/\//i.test(sanitizedPath)) {
+    return sanitizedPath;
+  }
+
+  const normalizedPath = sanitizedPath.startsWith('/') ? sanitizedPath : `/${sanitizedPath}`;
+  return `${API_URL}${normalizedPath}`;
+}
+
 async function request<T>(path: string, method: HttpMethod, token?: string, body?: unknown): Promise<T> {
-  const response = await fetch(`${API_URL}${path}`, {
+  const response = await fetch(resolveApiUrl(path), {
     method,
     headers: {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -58,7 +69,7 @@ export function deletePbcList(token: string, pbcListId: string): Promise<{ messa
 
 export function downloadPbcTemplate(token: string, clientId?: string): Promise<Blob> {
   const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : '';
-  return fetch(`${API_URL}/api/pbc-lists/template${query}`, {
+  return fetch(resolveApiUrl(`/api/pbc-lists/template${query}`), {
     method: 'GET',
     headers: {
       Authorization: `Bearer ${token}`,
@@ -108,7 +119,7 @@ export function downloadUpdatedPbcItemsExcel(
   token: string,
   payload: { pbcListId: string; itemIds: string[] },
 ): Promise<Blob> {
-  return fetch(`${API_URL}/api/pbc-items/export`, {
+  return fetch(resolveApiUrl('/api/pbc-items/export'), {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
@@ -137,6 +148,10 @@ export function uploadRequirementFile(token: string, requirementId: string, file
   return request<Submission>(`/api/uploads/${requirementId}`, 'POST', token, formData);
 }
 
+export function fetchSubmissions(token: string): Promise<Submission[]> {
+  return request<Submission[]>('/api/uploads', 'GET', token);
+}
+
 export function fetchPbcItemFiles(token: string, pbcItemId: string): Promise<PbcItemFile[]> {
   return request<PbcItemFile[]>(`/api/pbc-item-files?pbcItemId=${encodeURIComponent(pbcItemId)}`, 'GET', token);
 }
@@ -146,6 +161,10 @@ export function uploadPbcItemFile(token: string, pbcItemId: string, file: File):
   formData.append('file', file);
 
   return request<PbcItemFile>(`/api/pbc-item-files/${encodeURIComponent(pbcItemId)}`, 'POST', token, formData);
+}
+
+export function reviewPbcItemFile(token: string, fileId: string, decision: 'accepted' | 'rejected'): Promise<PbcItemFile> {
+  return request<PbcItemFile>(`/api/pbc-item-files/${encodeURIComponent(fileId)}/review`, 'PUT', token, { decision });
 }
 
 export function deletePbcItemFile(token: string, fileId: string): Promise<{ message: string }> {

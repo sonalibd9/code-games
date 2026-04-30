@@ -3,10 +3,28 @@ import { Router } from 'express';
 import { z } from 'zod';
 import * as XLSX from 'xlsx';
 import { AuthenticatedRequest, requireAuth, requireRole } from '../middleware/auth';
-import { pbcItems, pbcLists } from '../models/types';
+import { pbcItemFiles, pbcItems, pbcLists } from '../models/types';
 import { parsePbcItemsFromFile } from '../utils/pbcParser';
 
 const router = Router();
+
+function getDocumentReviewStatusForItem(itemId: string): 'No Document' | 'Pending Review' | 'Accepted' | 'Rejected' {
+  const files = pbcItemFiles.filter((file) => file.pbcItemId === itemId);
+  if (files.length === 0) {
+    return 'No Document';
+  }
+
+  const reviewedStatuses = files.map((file) => file.reviewStatus ?? 'pending-review');
+  if (reviewedStatuses.some((status) => status === 'rejected')) {
+    return 'Rejected';
+  }
+
+  if (reviewedStatuses.every((status) => status === 'accepted')) {
+    return 'Accepted';
+  }
+
+  return 'Pending Review';
+}
 
 function inferPriorityFromRiskAssertion(value: string): string {
   const text = (value ?? '').trim().toLowerCase();
@@ -115,7 +133,11 @@ router.get('/', requireAuth, (req: AuthenticatedRequest, res) => {
   }
 
   if (req.user?.role === 'auditor') {
-    const result = pbcListId ? pbcItems.filter((item) => item.pbcListId === pbcListId) : pbcItems;
+    const result = (pbcListId ? pbcItems.filter((item) => item.pbcListId === pbcListId) : pbcItems)
+      .map((item) => ({
+        ...item,
+        documentReviewStatus: getDocumentReviewStatusForItem(item.id),
+      }));
     res.json(result);
     return;
   }
@@ -125,7 +147,12 @@ router.get('/', requireAuth, (req: AuthenticatedRequest, res) => {
     (item) => clientListIds.includes(item.pbcListId) && (!pbcListId || item.pbcListId === pbcListId),
   );
 
-  res.json(scoped);
+  res.json(
+    scoped.map((item) => ({
+      ...item,
+      documentReviewStatus: getDocumentReviewStatusForItem(item.id),
+    })),
+  );
 });
 
 const bulkUpdateSchema = z.object({
@@ -201,8 +228,7 @@ router.put('/bulk', requireAuth, requireRole('auditor'), (req, res) => {
     current.requestId = incoming.requestId ?? current.requestId;
     current.description = incoming.description ?? current.description;
     current.riskAssertion = incoming.riskAssertion ?? current.riskAssertion;
-    const inferredPriority = inferPriorityFromRiskAssertion(current.riskAssertion);
-    current.priority = inferredPriority || incoming.priority || current.priority;
+    current.priority = incoming.priority ?? current.priority;
     current.owner = incoming.owner ?? current.owner;
     current.requestedDate = incoming.requestedDate ?? current.requestedDate;
     current.dueDate = incoming.dueDate ?? current.dueDate;

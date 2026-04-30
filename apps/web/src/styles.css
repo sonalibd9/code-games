@@ -80,6 +80,160 @@ body {
   margin-bottom: 0;
 }
 
+.brand-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.notification-bell-wrap {
+  position: relative;
+}
+
+.notification-bell {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  margin-bottom: 0;
+  border-radius: 999px;
+  border: 1px solid #d7dee3;
+  background: #ffffff;
+  color: #1f2937;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
+}
+
+.notification-bell:hover {
+  background: #f8fafc;
+}
+
+.notification-bell-icon {
+  width: 20px;
+  height: 20px;
+}
+
+.notification-badge {
+  position: absolute;
+  top: -3px;
+  right: -2px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #dc2626;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 20px;
+  text-align: center;
+}
+
+.notification-menu {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  width: min(420px, calc(100vw - 32px));
+  max-height: 70vh;
+  overflow: auto;
+  padding: 14px;
+  border: 1px solid #d7dee3;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 20px 40px rgba(15, 23, 42, 0.18);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  z-index: 40;
+}
+
+.notification-menu-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.notification-menu-header h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.notification-menu-header span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.notification-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.notification-list-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.notification-list-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.notification-item {
+  padding: 12px 14px;
+  border: 1px solid #dbe3e8;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+
+.notification-item-top,
+.notification-item-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.notification-item-top strong {
+  color: #0f172a;
+}
+
+.notification-item-time,
+.notification-item-meta {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.notification-item-message {
+  margin: 8px 0;
+  color: #334155;
+  line-height: 1.45;
+}
+
+.notification-link {
+  width: auto;
+  min-width: 0;
+  padding: 0;
+  margin: 4px 0 0;
+  border: none;
+  background: transparent;
+  color: #2563eb;
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: underline;
+  box-shadow: none;
+}
+
+.notification-link:hover {
+  color: #1d4ed8;
+}
+
 .theme-toggle {
   width: auto;
   min-width: 92px;
@@ -186,6 +340,64 @@ body {
   padding-bottom: 20px;
 }
 
+.technical-updates-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  margin: -8px 0 20px;
+  border: 1px solid #d7dee3;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #1f2937;
+  text-decoration: none;
+  overflow: hidden;
+}
+
+.technical-updates-label {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 700;
+  color: #0f172a;
+  text-transform: uppercase;
+  letter-spacing: 0.35px;
+}
+
+.technical-updates-track-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.technical-updates-track {
+  display: inline-flex;
+  gap: 30px;
+  white-space: nowrap;
+  animation: technicalTicker 28s linear infinite;
+}
+
+.technical-updates-item {
+  font-size: 12px;
+  color: #334155;
+}
+
+.technical-updates-open {
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 700;
+  color: #2563eb;
+}
+
+@keyframes technicalTicker {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
 body.theme-dark {
   color: #e2e8f0;
   background:
@@ -262,14 +474,90 @@ body.theme-dark .brand-dot {
   box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.3);
 }
 
+body.theme-dark .notification-bell,
+body.theme-dark .notification-menu,
+body.theme-dark .notification-item {
+  background: #0f172a;
+  border-color: #334155;
+  color: #e2e8f0;
+}
+
+body.theme-dark .notification-item-top strong,
+body.theme-dark .notification-item-message,
+body.theme-dark .notification-menu-header h3 {
+  color: #e2e8f0;
+}
+
+body.theme-dark .notification-item-time,
+body.theme-dark .notification-item-meta,
+body.theme-dark .notification-menu-header span {
+  color: #94a3b8;
+}
+
+body.theme-dark .notification-link {
+  color: #93c5fd;
+}
+
 body.theme-dark .hero-chips span {
   background: rgba(15, 23, 42, 0.42);
   border-color: rgba(203, 213, 225, 0.35);
 }
 
+body.theme-dark .technical-updates-bar {
+  background: rgba(15, 23, 42, 0.86);
+  border-color: #334155;
+}
+
+body.theme-dark .technical-updates-label,
+body.theme-dark .technical-updates-item {
+  color: #cbd5e1;
+}
+
+body.theme-dark .technical-updates-open {
+  color: #93c5fd;
+}
+
 .brand-shell > .card,
 .brand-shell > section.card {
   margin-bottom: 24px;
+}
+
+.page-back-controls {
+  display: flex;
+  margin-bottom: 20px;
+  justify-content: flex-end;
+}
+
+.page-back-controls-top {
+  justify-content: flex-end;
+}
+
+.page-back-controls-bottom {
+  justify-content: flex-end;
+  margin-top: 20px;
+}
+
+.page-back-button {
+  width: auto;
+  min-width: 200px;
+  margin-bottom: 0;
+}
+
+.page-inline-back-controls {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+.page-inline-back-controls-spaced {
+  margin-top: 0;
+  margin-bottom: 24px;
+}
+
+.page-inline-back-button {
+  width: auto;
+  min-width: 180px;
+  margin-bottom: 0;
 }
 
 @media (max-width: 1024px) {
@@ -862,7 +1150,7 @@ button.danger {
 
 .pbc-editor-page .table th,
 .pbc-editor-page .table td {
-  font-size: 12px;
+  font-size: 11px;
   padding: 4px;
 }
 
@@ -882,6 +1170,36 @@ button.danger {
 
 .pbc-editor-page .actions {
   gap: 8px;
+}
+
+.pbc-editor-page .pbc-editor-top-actions {
+  position: sticky;
+  top: 78px;
+  z-index: 16;
+  background: #ffffff;
+  border-bottom: 1px solid #dce4ea;
+  padding: 10px 0;
+  margin-bottom: 10px;
+}
+
+body.theme-dark .pbc-editor-page .pbc-editor-top-actions {
+  background: #111b2e;
+  border-bottom-color: #334155;
+}
+
+.client-pbc-top-actions {
+  position: sticky;
+  top: 78px;
+  z-index: 16;
+  background: #ffffff;
+  border-bottom: 1px solid #dce4ea;
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+}
+
+body.theme-dark .client-pbc-top-actions {
+  background: #111b2e;
+  border-bottom-color: #334155;
 }
 
 /* ── Status badge (read-only, used in client-pbc-items and item-detail) ── */

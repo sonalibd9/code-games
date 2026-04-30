@@ -1,6 +1,5 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  API_URL,
   deletePbcList,
   deletePbcItemFile,
   downloadPbcTemplate,
@@ -11,21 +10,60 @@ import {
   fetchPbcItems,
   fetchPbcLists,
   fetchRequirements,
+  fetchSubmissions,
   login,
   savePbcItems,
+  resolveApiUrl,
+  reviewPbcItemFile,
   updatePbcItemStatus,
   uploadPbcItemFile,
   uploadPbcList,
   uploadRequirementFile,
 } from './api';
-import { AuthUser, ClientEntity, Notification, PbcItem, PbcItemFile, PbcList, Requirement } from './types';
+import { AuthUser, ClientEntity, Notification, PbcItem, PbcItemFile, PbcList, Requirement, Submission } from './types';
 
 interface Session {
   token: string;
   user: AuthUser;
 }
 
-type PageState = 'portal' | 'auditor-client-select' | 'auditor-pbc' | 'pbc-editor' | 'client-pbc-items' | 'pbc-item-detail';
+type PageState = 'portal' | 'auditor-client-select' | 'auditor-pbc' | 'trial-balance' | 'pbc-editor' | 'client-pbc-items' | 'pbc-item-detail';
+
+const AUDIT_FINALISATION_DATES_STORAGE_KEY = 'auditFinalisationDatesByClient';
+const TECHNICAL_UPDATES_LINK = 'https://answerconnect.cch.com/app/acr/combinable-document?nodeId=csh-da-filter!WKUS-TAL-DOCS-PHC-%7B30d62655-566c-3f42-b5a1-c23f405878f2%7D--WKUS_TAL_20329%23ARM59EB54A181BA18466525896B006159A5';
+const RECENT_TECHNICAL_UPDATES = [
+  'AnswerConnect.AI experience refresh with improved research entry points',
+  'Updated privacy and cookie preference controls for user sessions',
+  'Expanded support/help access links and external tax resource shortcuts',
+  'Current published platform build reference: Version 32.3.4',
+];
+
+function loadSavedAuditFinalisationDates(): Record<string, string> {
+  if (typeof window === 'undefined') {
+    return {};
+  }
+
+  try {
+    const raw = window.localStorage.getItem(AUDIT_FINALISATION_DATES_STORAGE_KEY);
+    if (!raw) {
+      return {};
+    }
+
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object') {
+      return {};
+    }
+
+    return Object.entries(parsed as Record<string, unknown>).reduce<Record<string, string>>((acc, [key, value]) => {
+      if (typeof value === 'string') {
+        acc[key] = value;
+      }
+      return acc;
+    }, {});
+  } catch {
+    return {};
+  }
+}
 
 function PieChart({ completed, inProgress, pending }: { completed: number; inProgress: number; pending: number }) {
   const total = completed + inProgress + pending;
@@ -322,18 +360,21 @@ function PriorityBreakdownPanel({ items }: { items: PbcItem[] }) {
 
 function App() {
   const [currentPage, setCurrentPage] = useState<PageState>('portal');
+  const [pageHistory, setPageHistory] = useState<PageState[]>([]);
   const [session, setSession] = useState<Session | null>(null);
-  const [auditorEmail, setAuditorEmail] = useState('auditor@firm.com');
-  const [auditorPassword, setAuditorPassword] = useState('Auditor@123');
-  const [clientEmail, setClientEmail] = useState('client.alpha@entity.com');
-  const [clientPassword, setClientPassword] = useState('Client@123');
+  const [auditorEmail, setAuditorEmail] = useState('');
+  const [auditorPassword, setAuditorPassword] = useState('');
+  const [clientEmail, setClientEmail] = useState('');
+  const [clientPassword, setClientPassword] = useState('');
   const [error, setError] = useState('');
 
   const [clients, setClients] = useState<ClientEntity[]>([]);
   const [pbcLists, setPbcLists] = useState<PbcList[]>([]);
   const [pbcAllItems, setPbcAllItems] = useState<PbcItem[]>([]);
   const [requirements, setRequirements] = useState<Requirement[]>([]);
+  const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [auditorNotifications, setAuditorNotifications] = useState<Notification[]>([]);
+  const [isNotificationMenuOpen, setIsNotificationMenuOpen] = useState(false);
 
   const [pbcClientId, setPbcClientId] = useState('');
   const [pbcFile, setPbcFile] = useState<File | null>(null);
@@ -346,6 +387,7 @@ function App() {
   const [updatedPbcItemIds, setUpdatedPbcItemIds] = useState<string[]>([]);
   const [activeAuditorClientId, setActiveAuditorClientId] = useState('');
   const [auditFinalisationDate, setAuditFinalisationDate] = useState('');
+  const [auditFinalisationDatesByClient, setAuditFinalisationDatesByClient] = useState<Record<string, string>>(() => loadSavedAuditFinalisationDates());
 
   // Item-level file upload state
   const [activePbcItem, setActivePbcItem] = useState<PbcItem | null>(null);
@@ -353,6 +395,8 @@ function App() {
   const [clientItemRows, setClientItemRows] = useState<PbcItem[]>([]);
   const [pbcItemFiles, setPbcItemFiles] = useState<PbcItemFile[]>([]);
   const [itemFileInput, setItemFileInput] = useState<File | null>(null);
+  const previousPageRef = useRef<PageState>('portal');
+  const skipHistoryRef = useRef(false);
 
   const visibleRequirements = useMemo(() => {
     if (!session) {
@@ -387,6 +431,77 @@ function App() {
 
     return pbcLists.filter((item) => item.clientId === session.user.clientId);
   }, [activeAuditorClientId, pbcLists, session]);
+
+  const getClientLabel = (clientId: string) => clients.find((client) => client.id === clientId)?.name ?? clientId;
+
+  const selectedAuditFinalisationDate = activeAuditorClientId
+    ? (auditFinalisationDatesByClient[activeAuditorClientId] ?? '')
+    : auditFinalisationDate;
+
+  const hasPreviousPage = pageHistory.length > 0;
+
+  const getNotificationLinkLabel = (notification: Notification) => {
+    if (notification.target.page === 'trial-balance') {
+      return 'Open trial balance page';
+    }
+
+    if (notification.target.page === 'pbc-item-detail') {
+      return notification.itemRequestId ? `Open item ${notification.itemRequestId}` : 'Open uploaded item';
+    }
+
+    return notification.requirementTitle ? `Open ${notification.requirementTitle}` : 'Open uploaded requirement';
+  };
+
+  const getDocumentReviewOutcomeLabel = (status?: PbcItem['documentReviewStatus']) => {
+    if (status === 'Accepted' || status === 'Rejected') {
+      return status;
+    }
+
+    return '';
+  };
+
+  useEffect(() => {
+    setIsNotificationMenuOpen(false);
+  }, [currentPage]);
+
+  useEffect(() => {
+    if (!session || session.user.role !== 'auditor') {
+      return;
+    }
+
+    if (!activeAuditorClientId) {
+      setAuditFinalisationDate('');
+      return;
+    }
+
+    setAuditFinalisationDate(auditFinalisationDatesByClient[activeAuditorClientId] ?? '');
+  }, [activeAuditorClientId, auditFinalisationDatesByClient, session]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    window.localStorage.setItem(
+      AUDIT_FINALISATION_DATES_STORAGE_KEY,
+      JSON.stringify(auditFinalisationDatesByClient),
+    );
+  }, [auditFinalisationDatesByClient]);
+
+  useEffect(() => {
+    const previousPage = previousPageRef.current;
+
+    if (skipHistoryRef.current) {
+      skipHistoryRef.current = false;
+      previousPageRef.current = currentPage;
+      return;
+    }
+
+    if (previousPage !== currentPage) {
+      setPageHistory((history) => [...history, previousPage]);
+      previousPageRef.current = currentPage;
+    }
+  }, [currentPage]);
 
   useEffect(() => {
     if (!session || session.user.role !== 'auditor') {
@@ -425,9 +540,10 @@ function App() {
     }
 
     if (role === 'auditor') {
-      const [clientList, notificationList] = await Promise.all([fetchClients(token), fetchNotifications(token)]);
+      const [clientList, notificationList, submissionList] = await Promise.all([fetchClients(token), fetchNotifications(token), fetchSubmissions(token)]);
       setClients(clientList);
       setAuditorNotifications(notificationList);
+      setSubmissions(submissionList);
       if (clientList.length > 0) {
         const defaultClientId = activeAuditorClientId || clientList[0].id;
         setPbcClientId(defaultClientId);
@@ -435,6 +551,7 @@ function App() {
       }
     } else {
       setAuditorNotifications([]);
+      setSubmissions([]);
     }
   }
 
@@ -443,7 +560,7 @@ function App() {
       return;
     }
 
-    const streamUrl = `${API_URL}/api/notifications/stream?token=${encodeURIComponent(session.token)}`;
+    const streamUrl = resolveApiUrl(`/api/notifications/stream?token=${encodeURIComponent(session.token)}`);
     const eventSource = new EventSource(streamUrl);
 
     const onSnapshot = (event: Event) => {
@@ -481,8 +598,8 @@ function App() {
     const filled = rows.map((row) => {
       const normalizedDueDate = normalizeDateForInput(row.dueDate);
       const inferredPriority = inferPriorityFromRiskAssertion(row.riskAssertion);
-      const finalPriority = inferredPriority || row.priority;
-      const calculatedDueDate = auditFinalisationDate ? calculateDueDate(auditFinalisationDate, finalPriority) : normalizedDueDate;
+      const finalPriority = row.priority || inferredPriority;
+      const calculatedDueDate = selectedAuditFinalisationDate ? calculateDueDate(selectedAuditFinalisationDate, finalPriority) : normalizedDueDate;
       return {
         ...row,
         priority: finalPriority,
@@ -500,13 +617,13 @@ function App() {
     setError('');
 
     try {
-      if (auditFinalisationDate) {
+      if (selectedAuditFinalisationDate) {
         const clientListIds = pbcLists
           .filter((list) => list.clientId === activeAuditorClientId)
           .map((list) => list.id);
 
         const itemsNeedingDueDateSync = pbcAllItems.filter(
-          (item) => clientListIds.includes(item.pbcListId) && normalizeDateForInput(item.dueDate) !== calculateDueDate(auditFinalisationDate, item.priority),
+          (item) => clientListIds.includes(item.pbcListId) && normalizeDateForInput(item.dueDate) !== calculateDueDate(selectedAuditFinalisationDate, item.priority),
         );
 
         if (itemsNeedingDueDateSync.length > 0) {
@@ -520,7 +637,7 @@ function App() {
               riskAssertion: row.riskAssertion,
               owner: row.owner,
               requestedDate: row.requestedDate,
-              dueDate: calculateDueDate(auditFinalisationDate, row.priority),
+              dueDate: calculateDueDate(selectedAuditFinalisationDate, row.priority),
               status: row.status,
               remarks: row.remarks,
             })),
@@ -547,16 +664,63 @@ function App() {
         : { email: clientEmail, password: clientPassword };
 
     try {
+      console.log('Logging in with credentials:', credentials);
       const loginData = await login(credentials.email, credentials.password);
+      console.log('Login successful:', loginData);
 
       if (loginData.user.role !== expectedRole) {
         setError(`This form is for ${expectedRole} login only.`);
         return;
       }
 
+      console.log('Setting session and loading portal data...');
+      setSession(loginData);
+      
+      try {
+        await loadPortalData(loginData.token, loginData.user.role);
+        console.log('Portal data loaded successfully');
+      } catch (dataErr) {
+        console.error('Error loading portal data:', dataErr);
+        setError(`Failed to load portal data: ${dataErr instanceof Error ? dataErr.message : 'Unknown error'}`);
+        return;
+      }
+
+      const nextPage = loginData.user.role === 'auditor' ? 'auditor-client-select' : 'portal';
+      skipHistoryRef.current = true;
+      previousPageRef.current = nextPage;
+      setPageHistory([]);
+      setCurrentPage(nextPage);
+      console.log('Page changed to:', nextPage);
+    } catch (err) {
+      console.error('Login error:', err);
+      setError(err instanceof Error ? err.message : 'Login failed.');
+    }
+  }
+
+  async function handleAuditorTrialBalanceLogin() {
+    setError('');
+    setSuccessMessage('');
+
+    const email = auditorEmail.trim() || 'auditor@firm.com';
+    const password = auditorPassword || 'Auditor@123';
+
+    setAuditorEmail(email);
+    setAuditorPassword(password);
+
+    try {
+      const loginData = await login(email, password);
+
+      if (loginData.user.role !== 'auditor') {
+        setError('This shortcut is for auditor login only.');
+        return;
+      }
+
       setSession(loginData);
       await loadPortalData(loginData.token, loginData.user.role);
-      setCurrentPage(loginData.user.role === 'auditor' ? 'auditor-client-select' : 'portal');
+      skipHistoryRef.current = true;
+      previousPageRef.current = 'trial-balance';
+      setPageHistory([]);
+      setCurrentPage('trial-balance');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed.');
     }
@@ -577,10 +741,10 @@ function App() {
       const uploaded = await uploadPbcList(session.token, targetClientId, pbcFile);
 
       let syncedCount = 0;
-      if (auditFinalisationDate) {
+      if (selectedAuditFinalisationDate) {
         const uploadedListItems = await fetchPbcItems(session.token, uploaded.id);
         const itemsNeedingDueDateSync = uploadedListItems.filter(
-          (item) => normalizeDateForInput(item.dueDate) !== calculateDueDate(auditFinalisationDate, item.priority),
+          (item) => normalizeDateForInput(item.dueDate) !== calculateDueDate(selectedAuditFinalisationDate, item.priority),
         );
 
         if (itemsNeedingDueDateSync.length > 0) {
@@ -594,7 +758,7 @@ function App() {
               riskAssertion: row.riskAssertion,
               owner: row.owner,
               requestedDate: row.requestedDate,
-              dueDate: calculateDueDate(auditFinalisationDate, row.priority),
+              dueDate: calculateDueDate(selectedAuditFinalisationDate, row.priority),
               status: row.status,
               remarks: row.remarks,
             })),
@@ -691,7 +855,29 @@ function App() {
 
         if (field === 'riskAssertion') {
           const inferredPriority = inferPriorityFromRiskAssertion(value);
-          return { ...row, riskAssertion: value, priority: inferredPriority || row.priority };
+          const nextPriority = inferredPriority || row.priority;
+          const nextDueDate = selectedAuditFinalisationDate
+            ? calculateDueDate(selectedAuditFinalisationDate, nextPriority)
+            : row.dueDate;
+
+          return {
+            ...row,
+            riskAssertion: value,
+            priority: nextPriority,
+            dueDate: nextDueDate,
+          };
+        }
+
+        if (field === 'priority') {
+          const nextDueDate = selectedAuditFinalisationDate
+            ? calculateDueDate(selectedAuditFinalisationDate, value)
+            : row.dueDate;
+
+          return {
+            ...row,
+            priority: value,
+            dueDate: nextDueDate,
+          };
         }
 
         return { ...row, [field]: value };
@@ -741,7 +927,7 @@ function App() {
           id: row.id,
           requestId: row.requestId,
           description: row.description,
-          priority: inferPriorityFromRiskAssertion(row.riskAssertion) || row.priority,
+          priority: row.priority,
           riskAssertion: row.riskAssertion,
           owner: row.owner,
           requestedDate: row.requestedDate,
@@ -949,6 +1135,43 @@ function App() {
     }
   }
 
+  async function handleReviewItemFile(fileId: string, decision: 'accepted' | 'rejected') {
+    if (!session || session.user.role !== 'auditor' || !activePbcItem) {
+      return;
+    }
+
+    setError('');
+    setSuccessMessage('');
+
+    try {
+      await reviewPbcItemFile(session.token, fileId, decision);
+
+      const [files, listItems, allItems] = await Promise.all([
+        fetchPbcItemFiles(session.token, activePbcItem.id),
+        fetchPbcItems(session.token, activePbcItem.pbcListId),
+        fetchPbcItems(session.token),
+      ]);
+
+      setPbcItemFiles(files);
+      setPbcEditorRows((current) => current.map((item) => listItems.find((row) => row.id === item.id) ?? item));
+      setClientItemRows((current) => current.map((item) => listItems.find((row) => row.id === item.id) ?? item));
+      setPbcAllItems(allItems);
+
+      const refreshedItem = listItems.find((item) => item.id === activePbcItem.id);
+      if (refreshedItem) {
+        setActivePbcItem(refreshedItem);
+      }
+
+      setSuccessMessage(
+        decision === 'accepted'
+          ? 'Document accepted successfully.'
+          : 'Document rejected. Item status set to Pending.',
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not review document.');
+    }
+  }
+
   async function handleItemStatusChange(status: string) {
     if (!session || !activePbcItem) {
       return;
@@ -971,6 +1194,78 @@ function App() {
     }
   }
 
+  function handleBackNavigation() {
+    setPageHistory((history) => {
+      if (history.length === 0) {
+        return history;
+      }
+
+      const updatedHistory = [...history];
+      const previousPage = updatedHistory.pop();
+
+      if (previousPage) {
+        skipHistoryRef.current = true;
+        setCurrentPage(previousPage);
+      }
+
+      return updatedHistory;
+    });
+  }
+
+  async function handleNotificationNavigate(notification: Notification) {
+    if (!session || session.user.role !== 'auditor') {
+      return;
+    }
+
+    setError('');
+    setSuccessMessage('');
+    setIsNotificationMenuOpen(false);
+    setActiveAuditorClientId(notification.clientId);
+    setPbcClientId(notification.clientId);
+
+    try {
+      if (notification.target.page === 'trial-balance') {
+        const latestSubmissions = await fetchSubmissions(session.token);
+        setSubmissions(latestSubmissions);
+        setCurrentPage('trial-balance');
+        return;
+      }
+
+      if (notification.target.page === 'portal') {
+        await loadPortalData(session.token, session.user.role);
+        setSelectedRequirementId(notification.target.requirementId ?? '');
+        setCurrentPage('portal');
+        return;
+      }
+
+      if (notification.target.page === 'pbc-item-detail' && notification.target.pbcListId && notification.target.pbcItemId) {
+        const [allItems, listItems, itemFiles] = await Promise.all([
+          fetchPbcItems(session.token),
+          fetchPbcItems(session.token, notification.target.pbcListId),
+          fetchPbcItemFiles(session.token, notification.target.pbcItemId),
+        ]);
+
+        const activeItem = listItems.find((item) => item.id === notification.target.pbcItemId);
+        if (!activeItem) {
+          setError('The uploaded item could not be found.');
+          setCurrentPage('auditor-pbc');
+          return;
+        }
+
+        setPbcAllItems(allItems);
+        setSelectedPbcListId(notification.target.pbcListId);
+        setPbcEditorRows(listItems);
+        setClientItemRows(listItems);
+        setActivePbcListForClient(pbcLists.find((list) => list.id === notification.target.pbcListId) ?? null);
+        setActivePbcItem(activeItem);
+        setPbcItemFiles(itemFiles);
+        setCurrentPage('pbc-item-detail');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not open notification target.');
+    }
+  }
+
   async function handleDownloadPbcTemplate() {
     if (!session) return;
     try {
@@ -990,6 +1285,29 @@ function App() {
     }
   }
 
+  function renderBackControls(position: 'top' | 'bottom') {
+    if (!session) {
+      return null;
+    }
+
+    if (currentPage === 'auditor-client-select') {
+      return null;
+    }
+
+    return (
+      <div className={`page-back-controls page-back-controls-${position}`}>
+        <button
+          type="button"
+          className="secondary page-back-button"
+          onClick={handleBackNavigation}
+          disabled={!hasPreviousPage}
+        >
+          ← Back to previous page
+        </button>
+      </div>
+    );
+  }
+
   function handleLogout() {
     const shouldLogout = window.confirm('Are you sure you want to logout?');
     if (!shouldLogout) {
@@ -1002,6 +1320,7 @@ function App() {
     setPbcLists([]);
     setPbcAllItems([]);
     setRequirements([]);
+    setSubmissions([]);
     setAuditorNotifications([]);
     setError('');
     setSuccessMessage('');
@@ -1019,6 +1338,43 @@ function App() {
     setClientItemRows([]);
     setPbcItemFiles([]);
     setItemFileInput(null);
+    setIsNotificationMenuOpen(false);
+    skipHistoryRef.current = true;
+    previousPageRef.current = 'portal';
+    setPageHistory([]);
+  }
+
+  function renderNotificationList(limit = 5, variant: 'panel' | 'menu' = 'panel') {
+    const items = auditorNotifications.slice(0, limit);
+
+    if (items.length === 0) {
+      return <p className="muted">No notifications yet.</p>;
+    }
+
+    return (
+      <ul className={`notification-list notification-list-${variant}`}>
+        {items.map((notification) => (
+          <li key={notification.id} className="notification-item">
+            <div className="notification-item-top">
+              <strong>{notification.fileName}</strong>
+              <span className="notification-item-time">{new Date(notification.uploadedAt).toLocaleString()}</span>
+            </div>
+            <p className="notification-item-message">{notification.message}</p>
+            <div className="notification-item-meta">
+              <span>{getClientLabel(notification.clientId)}</span>
+              <span>{notification.uploadedByEmail}</span>
+            </div>
+            <button
+              type="button"
+              className="notification-link"
+              onClick={() => void handleNotificationNavigate(notification)}
+            >
+              {getNotificationLinkLabel(notification)}
+            </button>
+          </li>
+        ))}
+      </ul>
+    );
   }
 
   function renderBrandHeader() {
@@ -1034,9 +1390,38 @@ function App() {
           <span>Support</span>
         </nav>
         {session ? (
-          <button type="button" className="secondary brand-logout" onClick={handleLogout}>
-            Logout
-          </button>
+          <div className="brand-actions">
+            {session.user.role === 'auditor' ? (
+              <div className="notification-bell-wrap">
+                <button
+                  type="button"
+                  className="notification-bell"
+                  aria-label="Open notifications"
+                  aria-expanded={isNotificationMenuOpen ? 'true' : 'false'}
+                  onClick={() => setIsNotificationMenuOpen((current) => !current)}
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true" className="notification-bell-icon">
+                    <path d="M12 3a4 4 0 0 0-4 4v1.1c0 .7-.2 1.4-.6 2L6 12.5c-.5.8-.7 1.8-.3 2.7.4.9 1.2 1.4 2.2 1.4h8.2c1 0 1.8-.5 2.2-1.4.4-.9.2-1.9-.3-2.7L16.6 10c-.4-.6-.6-1.3-.6-2V7a4 4 0 0 0-4-4Zm0 18a2.7 2.7 0 0 0 2.4-1.5h-4.8A2.7 2.7 0 0 0 12 21Z" fill="currentColor" />
+                  </svg>
+                  {auditorNotifications.length > 0 ? (
+                    <span className="notification-badge">{auditorNotifications.length > 9 ? '9+' : auditorNotifications.length}</span>
+                  ) : null}
+                </button>
+                {isNotificationMenuOpen ? (
+                  <div className="notification-menu">
+                    <div className="notification-menu-header">
+                      <h3>Client Upload Notifications</h3>
+                      <span>{auditorNotifications.length}</span>
+                    </div>
+                    {renderNotificationList(6, 'menu')}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+            <button type="button" className="secondary brand-logout" onClick={handleLogout}>
+              Logout
+            </button>
+          </div>
         ) : null}
       </header>
     );
@@ -1126,6 +1511,7 @@ function App() {
     return (
       <main className="page brand-shell">
         {renderBrandHeader()}
+        {renderBackControls('top')}
         <section className="hero-banner compact">
           <h1>Select client workspace</h1>
           <p>Choose a client to continue with PBC upload and dashboard monitoring.</p>
@@ -1140,7 +1526,6 @@ function App() {
               setActiveAuditorClientId(e.target.value);
               setPbcClientId(e.target.value);
               setSelectedPbcListId('');
-              setAuditFinalisationDate('');
             }}
           >
             <option value="">Select client</option>
@@ -1156,7 +1541,16 @@ function App() {
             id="audit-finalisation-date"
             type="date"
             value={auditFinalisationDate}
-            onChange={(e) => setAuditFinalisationDate(e.target.value)}
+            onChange={(e) => {
+              const value = e.target.value;
+              setAuditFinalisationDate(value);
+              if (activeAuditorClientId) {
+                setAuditFinalisationDatesByClient((current) => ({
+                  ...current,
+                  [activeAuditorClientId]: value,
+                }));
+              }
+            }}
           />
           <p className="muted" style={{ marginTop: 4 }}>
             This date will be used as the default due date for any PBC items that do not already have one.
@@ -1170,23 +1564,18 @@ function App() {
             >
               Continue to PBC Workspace
             </button>
+            <button type="button" className="secondary" onClick={() => setCurrentPage('trial-balance')}>
+              View Uploaded Trial Balance
+            </button>
           </div>
         </section>
 
         <section className="card" style={{ maxWidth: 700, margin: '0 auto 24px' }}>
           <h2>Notifications</h2>
-          {auditorNotifications.length === 0 ? (
-            <p className="muted">No notifications yet.</p>
-          ) : (
-            <ul>
-              {auditorNotifications.slice(0, 5).map((notification) => (
-                <li key={notification.id} style={{ marginBottom: 8 }}>
-                  <strong>{new Date(notification.createdAt).toLocaleString()}:</strong> {notification.message}
-                </li>
-              ))}
-            </ul>
-          )}
+          {renderNotificationList()}
         </section>
+
+        {renderBackControls('bottom')}
       </main>
     );
   }
@@ -1197,6 +1586,7 @@ function App() {
     return (
       <main className="page brand-shell">
         {renderBrandHeader()}
+        {renderBackControls('top')}
         <section className="hero-banner compact">
           <h1>PBC workspace</h1>
           <p>
@@ -1213,13 +1603,16 @@ function App() {
               <p className="muted">Upload PBC files and review dashboard status before opening the editor.</p>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-              {auditFinalisationDate ? (
+              {selectedAuditFinalisationDate ? (
                 <span className="audit-date-badge">
-                  Audit Finalisation: <strong>{new Date(auditFinalisationDate + 'T00:00:00').toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}</strong>
+                  Audit Finalisation: <strong>{new Date(selectedAuditFinalisationDate + 'T00:00:00').toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}</strong>
                 </span>
               ) : null}
               <button className="secondary" onClick={() => setCurrentPage('auditor-client-select')}>
                 Change Client
+              </button>
+              <button className="secondary" onClick={() => setCurrentPage('trial-balance')}>
+                View Trial Balance
               </button>
             </div>
           </div>
@@ -1263,6 +1656,15 @@ function App() {
                 disabled={!selectedPbcListId}
               >
                 Open PBC Editor
+              </button>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => setCurrentPage('trial-balance')}
+              >
+                View Trial Balance
               </button>
             </div>
 
@@ -1330,6 +1732,7 @@ function App() {
 
         {successMessage ? <p className="success">{successMessage}</p> : null}
         {error ? <p className="error">{error}</p> : null}
+        {renderBackControls('bottom')}
       </main>
     );
   }
@@ -1339,13 +1742,14 @@ function App() {
     return (
       <main className="page brand-shell">
         {renderBrandHeader()}
+        {renderBackControls('top')}
         <section className="hero-banner compact">
           <h1>{activePbcListForClient.originalName}</h1>
           <p>Review items and upload supporting documents for each request.</p>
         </section>
 
         <section className="card">
-          <div className="toolbar">
+          <div className="toolbar client-pbc-top-actions">
             <div>
               <h2>PBC Items</h2>
               <p className="muted">Click "Upload Files" on any item to attach supporting documents.</p>
@@ -1364,13 +1768,14 @@ function App() {
                 <th>Requested Date</th>
                 <th>Due Date</th>
                 <th>Status</th>
+                <th>Document Review</th>
                 <th>Remarks</th>
                 <th>Files</th>
               </tr>
             </thead>
             <tbody>
               {clientItemRows.length === 0 ? (
-                <tr><td colSpan={10}>No items found for this list.</td></tr>
+                <tr><td colSpan={11}>No items found for this list.</td></tr>
               ) : (
                 clientItemRows.map((item) => (
                   <tr key={item.id}>
@@ -1386,6 +1791,7 @@ function App() {
                         {item.status}
                       </span>
                     </td>
+                    <td>{getDocumentReviewOutcomeLabel(item.documentReviewStatus)}</td>
                     <td>{item.remarks || '—'}</td>
                     <td>
                       <button onClick={() => void openItemDetail(item)}>Upload Files</button>
@@ -1399,18 +1805,17 @@ function App() {
 
         {successMessage ? <p className="success">{successMessage}</p> : null}
         {error ? <p className="error">{error}</p> : null}
+        {renderBackControls('bottom')}
       </main>
     );
   }
 
   // ── Item detail: view / upload files for a single PBC item ────────────────
   if (currentPage === 'pbc-item-detail' && activePbcItem) {
-    const prevPage: PageState =
-      session?.user.role === 'auditor' ? 'pbc-editor' : 'client-pbc-items';
-
     return (
       <main className="page brand-shell">
         {renderBrandHeader()}
+        {renderBackControls('top')}
         <section className="hero-banner compact">
           <h1>Item: {activePbcItem.requestId}</h1>
           <p>{activePbcItem.description}</p>
@@ -1438,30 +1843,34 @@ function App() {
             </div>
             <div className="item-meta-row"><span className="item-meta-label">Remarks</span><span>{activePbcItem.remarks || '—'}</span></div>
           </div>
-          <button className="secondary" style={{ marginTop: 16 }} onClick={() => setCurrentPage(prevPage)}>
-            ← Back
-          </button>
+          <div className="page-inline-back-controls">
+            <button className="secondary page-inline-back-button" onClick={handleBackNavigation} disabled={!hasPreviousPage}>
+              ← Back
+            </button>
+          </div>
         </section>
 
-        <section className="card">
-          <h2>Upload Document</h2>
-          <p className="muted">Attach files related to this PBC item request (PDF, Excel, images, ZIP, etc.).</p>
-          <form onSubmit={(e) => void handleItemFileUpload(e)}>
-            <label htmlFor="item-file-input">Select file</label>
-            <input
-              id="item-file-input"
-              type="file"
-              onChange={(e) => setItemFileInput(e.target.files?.[0] ?? null)}
-              required
-            />
-            <div className="actions">
-              <button type="submit" disabled={!itemFileInput}>Upload File</button>
-            </div>
-          </form>
-        </section>
+        {session.user.role === 'client' ? (
+          <section className="card">
+            <h2>Upload Document</h2>
+            <p className="muted">Attach files related to this PBC item request (PDF, Excel, images, ZIP, etc.).</p>
+            <form onSubmit={(e) => void handleItemFileUpload(e)}>
+              <label htmlFor="item-file-input">Select file</label>
+              <input
+                id="item-file-input"
+                type="file"
+                onChange={(e) => setItemFileInput(e.target.files?.[0] ?? null)}
+                required
+              />
+              <div className="actions">
+                <button type="submit" disabled={!itemFileInput}>Upload File</button>
+              </div>
+            </form>
+          </section>
+        ) : null}
 
         <section className="card">
-          <h2>Uploaded Documents</h2>
+          <h2>{session.user.role === 'auditor' ? 'Client Uploaded Documents' : 'Uploaded Documents'}</h2>
           {pbcItemFiles.length === 0 ? (
             <p className="muted">No files uploaded yet for this item.</p>
           ) : (
@@ -1470,6 +1879,7 @@ function App() {
                 <tr>
                   <th>File Name</th>
                   <th>Uploaded At</th>
+                  <th>Review Status</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -1477,15 +1887,41 @@ function App() {
                 {pbcItemFiles.map((file) => (
                   <tr key={file.id}>
                     <td>
-                      <a className="file-link" href={`${API_URL}${file.downloadUrl}`} target="_blank" rel="noreferrer">
+                      <a className="file-link" href={resolveApiUrl(file.downloadUrl)} target="_blank" rel="noreferrer">
                         {file.originalName}
                       </a>
                     </td>
                     <td>{new Date(file.uploadedAt).toLocaleString()}</td>
                     <td>
-                      <button type="button" className="danger" onClick={() => void handleDeleteItemFile(file.id)}>
-                        Delete
-                      </button>
+                      {file.reviewStatus === 'accepted'
+                        ? 'Accepted'
+                        : file.reviewStatus === 'rejected'
+                        ? 'Rejected'
+                        : 'Pending Review'}
+                    </td>
+                    <td>
+                      {session.user.role === 'auditor' ? (
+                        <div className="inline">
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={() => void handleReviewItemFile(file.id, 'accepted')}
+                          >
+                            Accept
+                          </button>
+                          <button
+                            type="button"
+                            className="danger"
+                            onClick={() => void handleReviewItemFile(file.id, 'rejected')}
+                          >
+                            Reject
+                          </button>
+                        </div>
+                      ) : (
+                        <button type="button" className="danger" onClick={() => void handleDeleteItemFile(file.id)}>
+                          Delete
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -1496,6 +1932,117 @@ function App() {
 
         {successMessage ? <p className="success">{successMessage}</p> : null}
         {error ? <p className="error">{error}</p> : null}
+        {renderBackControls('bottom')}
+      </main>
+    );
+  }
+
+  // Trial Balance Viewer Page for Auditors
+  if (session.user.role === 'auditor' && currentPage === 'trial-balance') {
+    const trialBalanceSubmissions = submissions.filter((sub) => {
+      const req = requirements.find((r) => r.id === sub.requirementId);
+      return req && req.title.toLowerCase().includes('trial balance');
+    });
+
+    const submissionsByClient = trialBalanceSubmissions.reduce(
+      (acc, sub) => {
+        if (!acc[sub.clientId]) {
+          acc[sub.clientId] = [];
+        }
+        acc[sub.clientId].push(sub);
+        return acc;
+      },
+      {} as Record<string, Submission[]>,
+    );
+
+    const handleDownloadSubmission = async (submission: Submission) => {
+      try {
+        const response = await fetch(resolveApiUrl(`/api/uploads/download/${encodeURIComponent(submission.storedName)}`), {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${session.token}`,
+          },
+        });
+
+        if (!response.ok) {
+          throw new Error('Failed to download file');
+        }
+
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = submission.originalName;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Could not download trial balance file.');
+      }
+    };
+
+    return (
+      <main className="page brand-shell">
+        {renderBrandHeader()}
+        {renderBackControls('top')}
+        <section className="hero-banner compact">
+          <h1>Trial Balance Submissions</h1>
+          <p>Review all trial balance uploads from clients.</p>
+        </section>
+
+        <div style={{ maxWidth: 1000, margin: '24px auto' }}>
+          <div className="page-inline-back-controls page-inline-back-controls-spaced">
+            <button className="secondary page-inline-back-button" onClick={handleBackNavigation} disabled={!hasPreviousPage}>
+              Back to PBC Workspace
+            </button>
+          </div>
+
+          {Object.keys(submissionsByClient).length === 0 ? (
+            <section className="card">
+              <p className="muted">No trial balance submissions yet. Clients will upload their trial balance files here.</p>
+            </section>
+          ) : (
+            Object.entries(submissionsByClient).map(([clientId, subs]) => {
+              const client = clients.find((c) => c.id === clientId);
+              return (
+                <section key={clientId} className="card" style={{ marginBottom: 24 }}>
+                  <h2>{client?.name || clientId}</h2>
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th>File Name</th>
+                        <th>Uploaded By</th>
+                        <th>Uploaded At</th>
+                        <th>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {subs
+                        .sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime())
+                        .map((sub) => {
+                          const uploader = requirements.find((r) => r.id === sub.requirementId);
+                          return (
+                            <tr key={sub.id}>
+                              <td>{sub.originalName}</td>
+                              <td>{sub.uploadedByUserId}</td>
+                              <td>{new Date(sub.uploadedAt).toLocaleString()}</td>
+                              <td>
+                                <button onClick={() => void handleDownloadSubmission(sub)}>Download</button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                    </tbody>
+                  </table>
+                </section>
+              );
+            })
+          )}
+        </div>
+
+        {error ? <p className="error">{error}</p> : null}
+        {renderBackControls('bottom')}
       </main>
     );
   }
@@ -1506,18 +2053,19 @@ function App() {
     return (
       <main className="page pbc-editor-page">
         {renderBrandHeader()}
+        {renderBackControls('top')}
         <div className="card">
           <div className="toolbar">
             <div>
               <h1>PBC Editor</h1>
               <p className="muted">Edit uploaded PBC list items and click Save Changes to preserve updates.</p>
-              {auditFinalisationDate ? (
+              {selectedAuditFinalisationDate ? (
                 <p className="audit-date-badge" style={{ display: 'inline-flex', marginTop: 6 }}>
-                  Audit Finalisation: <strong style={{ marginLeft: 4 }}>{new Date(auditFinalisationDate + 'T00:00:00').toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}</strong>
+                  Audit Finalisation: <strong style={{ marginLeft: 4 }}>{new Date(selectedAuditFinalisationDate + 'T00:00:00').toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}</strong>
                 </p>
               ) : null}
             </div>
-            <button className="secondary" onClick={() => setCurrentPage(session.user.role === 'auditor' ? 'auditor-pbc' : 'portal')}>Back</button>
+            <button className="secondary" onClick={handleBackNavigation} disabled={!hasPreviousPage}>Back</button>
           </div>
         </div>
 
@@ -1541,6 +2089,25 @@ function App() {
 
         <section className="card">
           <h2>PBC Items</h2>
+          <div className="actions pbc-editor-top-actions">
+            <button onClick={handleSavePbcEdits} disabled={pbcEditorRows.length === 0}>
+              Save Changes
+            </button>
+            <button
+              className="secondary"
+              onClick={() => void handleDownloadUpdatedPbcItems()}
+              disabled={pbcEditorRows.length === 0 || updatedPbcItemIds.length === 0}
+            >
+              Download Updated Excel
+            </button>
+            <button
+              className="secondary"
+              onClick={() => void handleDownloadAllPbcItems()}
+              disabled={pbcEditorRows.length === 0}
+            >
+              Download All Items
+            </button>
+          </div>
           <table className="table">
             <thead>
               <tr>
@@ -1551,16 +2118,17 @@ function App() {
                 <th>Financial caption</th>
                 <th>Requested Date</th>
                 <th>Due Date</th>
-                <th style={{ width: '90px', maxWidth: '90px', whiteSpace: 'normal', wordBreak: 'break-word' }}>Uploaded/ Completed Date</th>
+                <th style={{ minWidth: '160px', whiteSpace: 'nowrap' }}>Uploaded/ Completed Date</th>
                 <th>Pending Days</th>
                 <th>Status</th>
+                <th>Document Review</th>
                 <th>Remarks</th>
               </tr>
             </thead>
             <tbody>
               {pbcEditorRows.length === 0 ? (
                 <tr>
-                  <td colSpan={12}>No PBC items found for this list.</td>
+                  <td colSpan={13}>No PBC items found for this list.</td>
                 </tr>
               ) : (
                 pbcEditorRows.map((row, index) => (
@@ -1595,7 +2163,7 @@ function App() {
                     <td>
                       <input type="date" value={normalizeDateForInput(row.dueDate)} onChange={(e) => updatePbcRow(index, 'dueDate', e.target.value)} />
                     </td>
-                    <td style={{ width: '90px', maxWidth: '90px', whiteSpace: 'normal', wordBreak: 'break-word', fontSize: '11px' }}>
+                    <td style={{ minWidth: '160px', whiteSpace: 'nowrap', fontSize: '11px' }}>
                       {normalizeDateForInput(row.activityDate)
                         ? new Date(`${normalizeDateForInput(row.activityDate)}T00:00:00`).toLocaleDateString()
                         : '—'}
@@ -1625,12 +2193,13 @@ function App() {
                         <option value="Completed">Completed</option>
                       </select>
                     </td>
+                    <td>{getDocumentReviewOutcomeLabel(row.documentReviewStatus)}</td>
                     <td>
                       <input value={row.remarks} onChange={(e) => updatePbcRow(index, 'remarks', e.target.value)} />
                     </td>
                     <td>
                       <button type="button" className="secondary" style={{ whiteSpace: 'nowrap' }} onClick={() => void openItemDetail(row)}>
-                        Files
+                        {session.user.role === 'auditor' ? 'View/Download' : 'Files'}
                       </button>
                     </td>
                   </tr>
@@ -1658,21 +2227,12 @@ function App() {
             </button>
           </div>
 
-          {auditorNotifications.length === 0 ? (
-            <p className="muted">No notifications yet.</p>
-          ) : (
-            <ul>
-              {auditorNotifications.slice(0, 5).map((notification) => (
-                <li key={notification.id} style={{ marginBottom: 8 }}>
-                  <strong>{new Date(notification.createdAt).toLocaleString()}:</strong> {notification.message}
-                </li>
-              ))}
-            </ul>
-          )}
+          {renderNotificationList()}
         </section>
 
         {successMessage ? <p className="success">{successMessage}</p> : null}
         {error ? <p className="error">{error}</p> : null}
+        {renderBackControls('bottom')}
       </main>
     );
   }
@@ -1680,10 +2240,34 @@ function App() {
   return (
     <main className="page brand-shell">
       {renderBrandHeader()}
+      {renderBackControls('top')}
       <section className="hero-banner compact">
         <h1>AI-powered solutions for audit professionals</h1>
         <p>Track requirements, manage PBC lists, and monitor submission status.</p>
       </section>
+
+      {session.user.role === 'client' ? (
+        <a
+          className="technical-updates-bar"
+          href={TECHNICAL_UPDATES_LINK}
+          target="_blank"
+          rel="noreferrer"
+          title="Open full technical updates"
+        >
+          <span className="technical-updates-label">Recent Technical Updates</span>
+          <div className="technical-updates-track-wrap" aria-label="Rolling technical updates">
+            <div className="technical-updates-track">
+              {[...RECENT_TECHNICAL_UPDATES, ...RECENT_TECHNICAL_UPDATES].map((update, index) => (
+                <span key={`${update}-${index}`} className="technical-updates-item">
+                  {update}
+                </span>
+              ))}
+            </div>
+          </div>
+          <span className="technical-updates-open">Open</span>
+        </a>
+      ) : null}
+
       <div className="card">
         <h1>Audit Client Portal</h1>
         <p className="muted">
@@ -1771,7 +2355,7 @@ function App() {
               visiblePbcLists.map((item) => (
                 <tr key={item.id}>
                   <td>
-                    <a className="file-link" href={`${API_URL}${item.downloadUrl}`} target="_blank" rel="noreferrer">
+                    <a className="file-link" href={resolveApiUrl(item.downloadUrl)} target="_blank" rel="noreferrer">
                       {item.originalName}
                     </a>
                   </td>
@@ -1815,6 +2399,7 @@ function App() {
 
       {successMessage ? <p className="success">{successMessage}</p> : null}
       {error ? <p className="error">{error}</p> : null}
+      {renderBackControls('bottom')}
     </main>
   );
 }

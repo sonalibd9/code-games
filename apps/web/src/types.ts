@@ -59,6 +59,7 @@ export interface PbcItem {
   status: string;
   remarks: string;
   updatedAt: string;
+  documentReviewStatus?: 'No Document' | 'Pending Review' | 'Accepted' | 'Rejected';
 }
 
 export interface PbcItemFile {
@@ -70,12 +71,35 @@ export interface PbcItemFile {
   uploadedAt: string;
   uploadedByUserId: string;
   downloadUrl: string;
+  reviewStatus: 'pending-review' | 'accepted' | 'rejected';
+  reviewedAt?: string;
+  reviewedByUserId?: string;
+}
+
+export type NotificationType = 'trial-balance-uploaded' | 'requirement-uploaded' | 'pbc-item-file-uploaded';
+
+export interface NotificationTarget {
+  page: 'trial-balance' | 'portal' | 'pbc-item-detail';
+  requirementId?: string;
+  pbcListId?: string;
+  pbcItemId?: string;
 }
 
 export interface Notification {
   id: string;
-  type: 'tb-uploaded';
+  type: NotificationType;
   clientId: string;
   message: string;
   createdAt: string;
+  uploadedAt: string;
+  uploadedByUserId: string;
+  uploadedByEmail: string;
+  fileName: string;
+  requirementId?: string;
+  requirementTitle?: string;
+  pbcListId?: string;
+  pbcItemId?: string;
+  itemRequestId?: string;
+  itemDescription?: string;
+  target: NotificationTarget;
 }
