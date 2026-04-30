@@ -1413,6 +1413,7 @@ function App() {
           <span>Solutions</span>
           <span>Insights</span>
           <span>Support</span>
+          <span>FAQs</span>
         </nav>
         {session ? (
           <div className="brand-actions">
