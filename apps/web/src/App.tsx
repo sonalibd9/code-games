@@ -452,12 +452,37 @@ function App() {
     return notification.requirementTitle ? `Open ${notification.requirementTitle}` : 'Open uploaded requirement';
   };
 
-  const getDocumentReviewOutcomeLabel = (status?: PbcItem['documentReviewStatus']) => {
-    if (status === 'Accepted' || status === 'Rejected') {
-      return status;
+  const renderDocumentReviewStatus = (status?: PbcItem['documentReviewStatus']) => {
+    if (status === 'Pending Review') {
+      return <span className="status-badge status-in-progress">Pending Auditor Review</span>;
     }
 
-    return '';
+    if (status === 'Accepted') {
+      return <span className="status-badge status-completed">Accepted</span>;
+    }
+
+    if (status === 'Rejected') {
+      return <span className="status-badge status-pending">Rejected</span>;
+    }
+
+    return '—';
+  };
+
+  const getReviewDateLabel = (status?: PbcItem['documentReviewStatus'], reviewedAt?: string) => {
+    if (status !== 'Accepted' && status !== 'Rejected') {
+      return '—';
+    }
+
+    if (!reviewedAt) {
+      return '—';
+    }
+
+    const parsed = new Date(reviewedAt);
+    if (Number.isNaN(parsed.getTime())) {
+      return '—';
+    }
+
+    return parsed.toLocaleDateString();
   };
 
   useEffect(() => {
@@ -1769,13 +1794,14 @@ function App() {
                 <th>Due Date</th>
                 <th>Status</th>
                 <th>Document Review</th>
+                <th>Review Date</th>
                 <th>Remarks</th>
                 <th>Files</th>
               </tr>
             </thead>
             <tbody>
               {clientItemRows.length === 0 ? (
-                <tr><td colSpan={11}>No items found for this list.</td></tr>
+                <tr><td colSpan={12}>No items found for this list.</td></tr>
               ) : (
                 clientItemRows.map((item) => (
                   <tr key={item.id}>
@@ -1791,7 +1817,8 @@ function App() {
                         {item.status}
                       </span>
                     </td>
-                    <td>{getDocumentReviewOutcomeLabel(item.documentReviewStatus)}</td>
+                    <td>{renderDocumentReviewStatus(item.documentReviewStatus)}</td>
+                    <td>{getReviewDateLabel(item.documentReviewStatus, item.documentReviewedAt)}</td>
                     <td>{item.remarks || '—'}</td>
                     <td>
                       <button onClick={() => void openItemDetail(item)}>Upload Files</button>
@@ -2122,13 +2149,15 @@ function App() {
                 <th>Pending Days</th>
                 <th>Status</th>
                 <th>Document Review</th>
+                <th>Review Date</th>
                 <th>Remarks</th>
+                <th>Files</th>
               </tr>
             </thead>
             <tbody>
               {pbcEditorRows.length === 0 ? (
                 <tr>
-                  <td colSpan={13}>No PBC items found for this list.</td>
+                  <td colSpan={14}>No PBC items found for this list.</td>
                 </tr>
               ) : (
                 pbcEditorRows.map((row, index) => (
@@ -2193,7 +2222,8 @@ function App() {
                         <option value="Completed">Completed</option>
                       </select>
                     </td>
-                    <td>{getDocumentReviewOutcomeLabel(row.documentReviewStatus)}</td>
+                    <td>{renderDocumentReviewStatus(row.documentReviewStatus)}</td>
+                    <td>{getReviewDateLabel(row.documentReviewStatus, row.documentReviewedAt)}</td>
                     <td>
                       <input value={row.remarks} onChange={(e) => updatePbcRow(index, 'remarks', e.target.value)} />
                     </td>
