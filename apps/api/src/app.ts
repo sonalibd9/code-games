@@ -13,6 +13,7 @@ import pbcItemFilesRouter from './routes/pbcItemFiles';
 import requirementsRouter from './routes/requirements';
 import uploadsRouter from './routes/uploads';
 import notificationsRouter from './routes/notifications';
+import faqsRouter from './routes/faqs';
 
 const app = express();
 
@@ -90,6 +91,7 @@ app.use('/api/pbc-item-files', pbcItemFilesRouter);
 app.use('/api/requirements', requirementsRouter);
 app.use('/api/uploads', uploadsRouter);
 app.use('/api/notifications', notificationsRouter);
+app.use('/api/faqs', faqsRouter);
 app.use('/uploads', express.static(path.resolve(__dirname, '../uploads')));
 
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

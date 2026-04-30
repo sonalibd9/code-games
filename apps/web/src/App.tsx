@@ -31,7 +31,7 @@ type PageState = 'portal' | 'auditor-client-select' | 'auditor-pbc' | 'trial-bal
 
 const AUDIT_FINALISATION_DATES_STORAGE_KEY = 'auditFinalisationDatesByClient';
 const TECHNICAL_UPDATES_LINK = 'https://answerconnect.cch.com/app/acr/combinable-document?nodeId=csh-da-filter!WKUS-TAL-DOCS-PHC-%7B30d62655-566c-3f42-b5a1-c23f405878f2%7D--WKUS_TAL_20329%23ARM59EB54A181BA18466525896B006159A5';
-const FAQ_VIDEO_URL = 'file:///C:/Users/Jaydeep.Joshi/Downloads/Document%20Intelligence%20Overview%20(1).mp4';
+const FAQ_VIDEO_API_PATH = '/api/faqs/video';
 const RECENT_TECHNICAL_UPDATES = [
   'AnswerConnect.AI experience refresh with improved research entry points',
   'Updated privacy and cookie preference controls for user sessions',
@@ -491,7 +491,7 @@ function App() {
       return;
     }
 
-    window.open(FAQ_VIDEO_URL, '_blank', 'noopener,noreferrer');
+    window.open(resolveApiUrl(FAQ_VIDEO_API_PATH), '_blank', 'noopener,noreferrer');
   };
 
   useEffect(() => {
