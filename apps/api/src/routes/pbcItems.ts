@@ -27,6 +27,35 @@ function getDocumentReviewStatusForItem(itemId: string): 'No Document' | 'Pendin
   return 'Pending Review';
 }
 
+function getDocumentReviewedAtForItem(itemId: string): string | undefined {
+  const files = pbcItemFiles.filter((file) => file.pbcItemId === itemId);
+  if (files.length === 0) {
+    return undefined;
+  }
+
+  const reviewedFiles = files.filter((file) => (file.reviewStatus === 'accepted' || file.reviewStatus === 'rejected') && Boolean(file.reviewedAt));
+  if (reviewedFiles.length === 0) {
+    return undefined;
+  }
+
+  const status = getDocumentReviewStatusForItem(itemId);
+  if (status === 'Pending Review' || status === 'No Document') {
+    return undefined;
+  }
+
+  const eligible = status === 'Rejected'
+    ? reviewedFiles.filter((file) => file.reviewStatus === 'rejected')
+    : reviewedFiles;
+
+  if (eligible.length === 0) {
+    return undefined;
+  }
+
+  return eligible
+    .map((file) => file.reviewedAt as string)
+    .sort((left, right) => new Date(right).getTime() - new Date(left).getTime())[0];
+}
+
 function inferPriorityFromRiskAssertion(value: string): string {
   const text = (value ?? '').trim().toLowerCase();
   if (!text) {
@@ -147,6 +176,7 @@ router.get('/', requireAuth, (req: AuthenticatedRequest, res) => {
       .map((item) => ({
         ...item,
         documentReviewStatus: getDocumentReviewStatusForItem(item.id),
+        documentReviewedAt: getDocumentReviewedAtForItem(item.id),
       }));
     res.json(result);
     return;
@@ -163,6 +193,7 @@ router.get('/', requireAuth, (req: AuthenticatedRequest, res) => {
     scoped.map((item) => ({
       ...item,
       documentReviewStatus: getDocumentReviewStatusForItem(item.id),
+      documentReviewedAt: getDocumentReviewedAtForItem(item.id),
     })),
   );
 });

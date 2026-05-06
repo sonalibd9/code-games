@@ -67,6 +67,7 @@ export interface PbcItem {
   remarks: string;
   updatedAt: string;
   documentReviewStatus?: 'No Document' | 'Pending Review' | 'Accepted' | 'Rejected';
+  documentReviewedAt?: string;
 }
 
 export interface PbcItemFile {
