@@ -20,6 +20,7 @@ export interface Requirement {
   clientId: string;
   title: string;
   description: string;
+  requestedDate?: string;
   dueDate?: string;
   status: 'open' | 'submitted';
 }
@@ -42,6 +43,12 @@ export interface PbcList {
   uploadedAt: string;
   uploadedByUserId: string;
   downloadUrl: string;
+  source: 'uploaded' | 'auto-generated';
+  approvedForClient: boolean;
+  approvedAt?: string;
+  approvedByUserId?: string;
+  trialBalanceSubmissionId?: string;
+  trialBalanceFileName?: string;
 }
 
 export interface PbcItem {
@@ -107,12 +114,11 @@ export interface Notification {
 export const clients: ClientEntity[] = [
   { id: 'c1', name: 'Alpha Listed Co.', entityType: 'listed-entity' },
   { id: 'c2', name: 'Beta Subsidiary Pvt. Ltd.', entityType: 'subsidiary' },
-  { id: 'c3', name: 'Gamma JV LLP', entityType: 'joint-venture' },
-  { id: 'c4', name: 'Delta Body Corporate', entityType: 'body-corporate' },
 ];
 
 export const users: User[] = [
   { id: 'u1', email: 'auditor@firm.com', password: 'Auditor@123', role: 'auditor' },
+  { id: 'u6', email: 'auditor.reviewer@firm.com', password: 'Reviewer@123', role: 'auditor' },
   { id: 'u2', email: 'client.alpha@entity.com', password: 'Client@123', role: 'client', clientId: 'c1' },
   { id: 'u3', email: 'client.beta@entity.com', password: 'Client@123', role: 'client', clientId: 'c2' },
 ];
@@ -123,6 +129,7 @@ export const requirements: Requirement[] = [
     clientId: 'c1',
     title: 'Trial balance for FY 2025-26',
     description: 'Upload signed trial balance with ledger mapping.',
+    requestedDate: '2026-01-30',
     dueDate: '2026-04-30',
     status: 'open',
   },

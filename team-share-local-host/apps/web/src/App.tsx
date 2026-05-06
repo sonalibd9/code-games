@@ -27,6 +27,18 @@ interface Session {
   user: AuthUser;
 }
 
+interface NotificationFeedItem {
+  id: string;
+  title: string;
+  categoryLabel: string;
+  summary: string;
+  dateTime: string;
+  primaryMeta: string;
+  secondaryMeta: string;
+  actionLabel: string;
+  onOpen: () => void;
+}
+
 type PageState = 'portal' | 'auditor-client-select' | 'auditor-pbc' | 'trial-balance' | 'pbc-editor' | 'client-pbc-items' | 'pbc-item-detail';
 
 const AUDIT_FINALISATION_DATES_STORAGE_KEY = 'auditFinalisationDatesByClient';
@@ -432,6 +444,11 @@ function App() {
     return pbcLists.filter((item) => item.clientId === session.user.clientId);
   }, [activeAuditorClientId, pbcLists, session]);
 
+  const visiblePbcItems = useMemo(() => {
+    const visibleListIds = new Set(visiblePbcLists.map((list) => list.id));
+    return pbcAllItems.filter((item) => visibleListIds.has(item.pbcListId));
+  }, [pbcAllItems, visiblePbcLists]);
+
   const getClientLabel = (clientId: string) => clients.find((client) => client.id === clientId)?.name ?? clientId;
 
   const selectedAuditFinalisationDate = activeAuditorClientId
@@ -442,14 +459,59 @@ function App() {
 
   const getNotificationLinkLabel = (notification: Notification) => {
     if (notification.target.page === 'trial-balance') {
-      return 'Open trial balance page';
+      return 'Open trial balance';
     }
 
     if (notification.target.page === 'pbc-item-detail') {
-      return notification.itemRequestId ? `Open item ${notification.itemRequestId}` : 'Open uploaded item';
+      return notification.itemRequestId ? `Open ${notification.itemRequestId}` : 'Open item';
     }
 
-    return notification.requirementTitle ? `Open ${notification.requirementTitle}` : 'Open uploaded requirement';
+    return 'Open requirement';
+  };
+
+  const getNotificationCategory = (notification: Notification) => {
+    if (notification.target.page === 'trial-balance') {
+      return { label: 'Trial balance', badge: 'TB' };
+    }
+
+    if (notification.target.page === 'pbc-item-detail') {
+      return { label: 'PBC item', badge: 'PBC' };
+    }
+
+    return { label: 'Requirement', badge: 'REQ' };
+  };
+
+  const getNotificationSummary = (notification: Notification) => {
+    const clientName = getClientLabel(notification.clientId);
+
+    if (notification.target.page === 'trial-balance') {
+      return `Uploaded trial balance for ${clientName}.`;
+    }
+
+    if (notification.target.page === 'pbc-item-detail') {
+      return notification.itemRequestId
+        ? `Uploaded supporting document for ${notification.itemRequestId}.`
+        : 'Uploaded supporting document for review.';
+    }
+
+    return notification.requirementTitle
+      ? `Uploaded document for ${notification.requirementTitle}.`
+      : notification.message;
+  };
+
+  const formatNotificationTime = (value: string) => {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return value;
+    }
+
+    return date.toLocaleString('en-GB', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    });
   };
 
   const getDocumentReviewOutcomeLabel = (status?: PbcItem['documentReviewStatus']) => {
@@ -1266,6 +1328,158 @@ function App() {
     }
   }
 
+  function openClientRequirementNotification(requirementId: string) {
+    setIsNotificationMenuOpen(false);
+    setSelectedRequirementId(requirementId);
+    setCurrentPage('portal');
+  }
+
+  function getNotificationFeedItems(): NotificationFeedItem[] {
+    if (!session) {
+      return [];
+    }
+
+    if (session.user.role === 'auditor') {
+      return auditorNotifications.map((notification) => {
+        const category = getNotificationCategory(notification);
+
+        return {
+          id: notification.id,
+          title: notification.fileName,
+          categoryLabel: category.label,
+          summary: getNotificationSummary(notification),
+          dateTime: notification.uploadedAt,
+          primaryMeta: getClientLabel(notification.clientId),
+          secondaryMeta: notification.uploadedByEmail,
+          actionLabel: getNotificationLinkLabel(notification),
+          onOpen: () => void handleNotificationNavigate(notification),
+        };
+      });
+    }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const feedItems: NotificationFeedItem[] = [];
+    const seenIds = new Set<string>();
+    const pushItem = (item: NotificationFeedItem) => {
+      if (!seenIds.has(item.id)) {
+        seenIds.add(item.id);
+        feedItems.push(item);
+      }
+    };
+
+    visiblePbcItems
+      .filter((item) => item.documentReviewStatus === 'Rejected')
+      .slice(0, 4)
+      .forEach((item) => {
+        pushItem({
+          id: `client-rejected-${item.id}`,
+          title: item.requestId,
+          categoryLabel: 'Action required',
+          summary: item.remarks || 'Auditor rejected the uploaded support. Please review and upload the corrected document.',
+          dateTime: item.updatedAt || item.dueDate || today.toISOString(),
+          primaryMeta: item.owner || 'PBC item',
+          secondaryMeta: item.description,
+          actionLabel: 'Open item',
+          onOpen: () => {
+            setIsNotificationMenuOpen(false);
+            void openItemDetail(item);
+          },
+        });
+      });
+
+    visiblePbcItems
+      .filter((item) => item.status !== 'Completed')
+      .map((item) => ({ item, days: calcPendingDays(normalizeDateForInput(item.dueDate)) }))
+      .filter(({ days }) => days !== null && days < 0)
+      .slice(0, 4)
+      .forEach(({ item, days }) => {
+        pushItem({
+          id: `client-overdue-pbc-${item.id}`,
+          title: item.requestId,
+          categoryLabel: 'Overdue PBC',
+          summary: `${Math.abs(days ?? 0)} day${Math.abs(days ?? 0) === 1 ? '' : 's'} overdue. ${item.description}`,
+          dateTime: item.dueDate || item.updatedAt || today.toISOString(),
+          primaryMeta: item.owner || 'PBC item',
+          secondaryMeta: `Due ${normalizeDateForInput(item.dueDate) || item.dueDate || '-'}`,
+          actionLabel: 'Open item',
+          onOpen: () => {
+            setIsNotificationMenuOpen(false);
+            void openItemDetail(item);
+          },
+        });
+      });
+
+    visibleRequirements
+      .filter((requirement) => requirement.status === 'open')
+      .map((requirement) => ({ requirement, days: calcPendingDays(requirement.dueDate ?? '') }))
+      .filter(({ days }) => days !== null && days < 0)
+      .slice(0, 3)
+      .forEach(({ requirement, days }) => {
+        pushItem({
+          id: `client-overdue-requirement-${requirement.id}`,
+          title: requirement.title,
+          categoryLabel: 'Overdue requirement',
+          summary: `${Math.abs(days ?? 0)} day${Math.abs(days ?? 0) === 1 ? '' : 's'} overdue. ${requirement.description}`,
+          dateTime: requirement.dueDate || today.toISOString(),
+          primaryMeta: 'Requirement upload',
+          secondaryMeta: `Due ${normalizeDateForInput(requirement.dueDate ?? '') || requirement.dueDate || '-'}`,
+          actionLabel: 'Upload',
+          onOpen: () => openClientRequirementNotification(requirement.id),
+        });
+      });
+
+    visiblePbcItems
+      .filter((item) => item.status !== 'Completed')
+      .map((item) => ({ item, days: calcPendingDays(normalizeDateForInput(item.dueDate)) }))
+      .filter(({ days }) => days !== null && days >= 0 && days <= 7)
+      .slice(0, 3)
+      .forEach(({ item, days }) => {
+        pushItem({
+          id: `client-due-pbc-${item.id}`,
+          title: item.requestId,
+          categoryLabel: 'Due soon',
+          summary: days === 0 ? `Due today. ${item.description}` : `Due in ${days} day${days === 1 ? '' : 's'}. ${item.description}`,
+          dateTime: item.dueDate || item.updatedAt || today.toISOString(),
+          primaryMeta: item.owner || 'PBC item',
+          secondaryMeta: `Due ${normalizeDateForInput(item.dueDate) || item.dueDate || '-'}`,
+          actionLabel: 'Open item',
+          onOpen: () => {
+            setIsNotificationMenuOpen(false);
+            void openItemDetail(item);
+          },
+        });
+      });
+
+    visiblePbcLists
+      .slice()
+      .sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime())
+      .slice(0, 2)
+      .forEach((list) => {
+        const itemCount = getStatusCountsForList(list.id).total;
+        pushItem({
+          id: `client-pbc-list-${list.id}`,
+          title: list.originalName,
+          categoryLabel: 'PBC list',
+          summary: 'PBC list is available for document uploads.',
+          dateTime: list.uploadedAt,
+          primaryMeta: `${itemCount} item${itemCount === 1 ? '' : 's'}`,
+          secondaryMeta: 'Uploaded by auditor',
+          actionLabel: 'View items',
+          onOpen: () => {
+            setIsNotificationMenuOpen(false);
+            void openClientPbcItems(list);
+          },
+        });
+      });
+
+    return feedItems.slice(0, 10);
+  }
+
+  const notificationFeedItems = getNotificationFeedItems();
+  const notificationCount = notificationFeedItems.length;
+  const notificationMenuTitle = session?.user.role === 'auditor' ? 'Client Upload Notifications' : 'Notifications';
+
   async function handleDownloadPbcTemplate() {
     if (!session) return;
     try {
@@ -1345,7 +1559,7 @@ function App() {
   }
 
   function renderNotificationList(limit = 5, variant: 'panel' | 'menu' = 'panel') {
-    const items = auditorNotifications.slice(0, limit);
+    const items = notificationFeedItems.slice(0, limit);
 
     if (items.length === 0) {
       return <p className="muted">No notifications yet.</p>;
@@ -1354,24 +1568,37 @@ function App() {
     return (
       <ul className={`notification-list notification-list-${variant}`}>
         {items.map((notification) => (
-          <li key={notification.id} className="notification-item">
-            <div className="notification-item-top">
-              <strong>{notification.fileName}</strong>
-              <span className="notification-item-time">{new Date(notification.uploadedAt).toLocaleString()}</span>
-            </div>
-            <p className="notification-item-message">{notification.message}</p>
-            <div className="notification-item-meta">
-              <span>{getClientLabel(notification.clientId)}</span>
-              <span>{notification.uploadedByEmail}</span>
-            </div>
-            <button
-              type="button"
-              className="notification-link"
-              onClick={() => void handleNotificationNavigate(notification)}
-            >
-              {getNotificationLinkLabel(notification)}
-            </button>
-          </li>
+            <li key={notification.id} className="notification-item">
+              <div className="notification-item-main">
+                <div className="notification-item-content">
+                  <div className="notification-item-top">
+                    <div className="notification-title-block">
+                      <div className="notification-title-row">
+                        <strong className="notification-file-name">{notification.title}</strong>
+                        <span className="notification-type">{notification.categoryLabel}</span>
+                      </div>
+                      <p className="notification-item-message">{notification.summary}</p>
+                    </div>
+                    <time className="notification-item-time" dateTime={notification.dateTime}>
+                      {formatNotificationTime(notification.dateTime)}
+                    </time>
+                  </div>
+                  <div className="notification-item-bottom">
+                    <div className="notification-item-meta" aria-label="Notification details">
+                      <span>{notification.primaryMeta}</span>
+                      <span>{notification.secondaryMeta}</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="notification-link"
+                      onClick={notification.onOpen}
+                    >
+                      {notification.actionLabel}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </li>
         ))}
       </ul>
     );
@@ -1391,33 +1618,31 @@ function App() {
         </nav>
         {session ? (
           <div className="brand-actions">
-            {session.user.role === 'auditor' ? (
-              <div className="notification-bell-wrap">
-                <button
-                  type="button"
-                  className="notification-bell"
-                  aria-label="Open notifications"
-                  aria-expanded={isNotificationMenuOpen ? 'true' : 'false'}
-                  onClick={() => setIsNotificationMenuOpen((current) => !current)}
-                >
-                  <svg viewBox="0 0 24 24" aria-hidden="true" className="notification-bell-icon">
-                    <path d="M12 3a4 4 0 0 0-4 4v1.1c0 .7-.2 1.4-.6 2L6 12.5c-.5.8-.7 1.8-.3 2.7.4.9 1.2 1.4 2.2 1.4h8.2c1 0 1.8-.5 2.2-1.4.4-.9.2-1.9-.3-2.7L16.6 10c-.4-.6-.6-1.3-.6-2V7a4 4 0 0 0-4-4Zm0 18a2.7 2.7 0 0 0 2.4-1.5h-4.8A2.7 2.7 0 0 0 12 21Z" fill="currentColor" />
-                  </svg>
-                  {auditorNotifications.length > 0 ? (
-                    <span className="notification-badge">{auditorNotifications.length > 9 ? '9+' : auditorNotifications.length}</span>
-                  ) : null}
-                </button>
-                {isNotificationMenuOpen ? (
-                  <div className="notification-menu">
-                    <div className="notification-menu-header">
-                      <h3>Client Upload Notifications</h3>
-                      <span>{auditorNotifications.length}</span>
-                    </div>
-                    {renderNotificationList(6, 'menu')}
-                  </div>
+            <div className="notification-bell-wrap">
+              <button
+                type="button"
+                className="notification-bell"
+                aria-label="Open notifications"
+                aria-expanded={isNotificationMenuOpen ? 'true' : 'false'}
+                onClick={() => setIsNotificationMenuOpen((current) => !current)}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true" className="notification-bell-icon">
+                  <path d="M12 3a4 4 0 0 0-4 4v1.1c0 .7-.2 1.4-.6 2L6 12.5c-.5.8-.7 1.8-.3 2.7.4.9 1.2 1.4 2.2 1.4h8.2c1 0 1.8-.5 2.2-1.4.4-.9.2-1.9-.3-2.7L16.6 10c-.4-.6-.6-1.3-.6-2V7a4 4 0 0 0-4-4Zm0 18a2.7 2.7 0 0 0 2.4-1.5h-4.8A2.7 2.7 0 0 0 12 21Z" fill="currentColor" />
+                </svg>
+                {notificationCount > 0 ? (
+                  <span className="notification-badge">{notificationCount > 9 ? '9+' : notificationCount}</span>
                 ) : null}
-              </div>
-            ) : null}
+              </button>
+              {isNotificationMenuOpen ? (
+                <div className="notification-menu">
+                  <div className="notification-menu-header">
+                    <h3>{notificationMenuTitle}</h3>
+                    <span className="notification-menu-count">{notificationCount} active</span>
+                  </div>
+                  {renderNotificationList(6, 'menu')}
+                </div>
+              ) : null}
+            </div>
             <button type="button" className="secondary brand-logout" onClick={handleLogout}>
               Logout
             </button>
@@ -1432,13 +1657,13 @@ function App() {
       <main className="page brand-shell">
         {renderBrandHeader()}
         <section className="hero-banner">
-          <h1>AI-powered audit collaboration</h1>
-          <p>Streamline auditor and client workflows in one secure portal.</p>
+          <h1><span className="hero-title-highlight">One stop solution for audit collaboration</span></h1>
+          <p className="hero-copy-highlight">Track PBC lists, evidence uploads, and review follow-ups in one secure portal.</p>
         </section>
         <div className="inline" style={{ margin: '24px auto 80px', maxWidth: 980, alignItems: 'stretch', flexWrap: 'wrap' }}>
           <div className="card auth-card" style={{ marginBottom: 0 }}>
             <h1>Auditor Login</h1>
-            <p className="muted">Use auditor credentials to manage all client PBC workspaces.</p>
+            <p className="muted">Use auditor credentials to manage client PBC workspaces, uploads, and review signals.</p>
             <form onSubmit={(event) => void handleLogin('auditor', event)}>
               <label htmlFor="auditor-email">Email</label>
               <input id="auditor-email" value={auditorEmail} onChange={(e) => setAuditorEmail(e.target.value)} />
@@ -1471,7 +1696,7 @@ function App() {
 
           <div className="card auth-card" style={{ marginBottom: 0 }}>
             <h1>Client Login</h1>
-            <p className="muted">Use client credentials to view and upload only your own client PBC list.</p>
+            <p className="muted">Use client credentials to open assigned requests, upload evidence, and follow progress.</p>
             <form onSubmit={(event) => void handleLogin('client', event)}>
               <label htmlFor="client-email">Email</label>
               <input id="client-email" value={clientEmail} onChange={(e) => setClientEmail(e.target.value)} />
@@ -1761,7 +1986,7 @@ function App() {
             <thead>
               <tr>
                 <th>Request ID</th>
-                <th style={{ minWidth: '280px' }}>Description</th>
+                <th>Description</th>
                 <th>Priority</th>
                 <th>Risk / Assertion</th>
                 <th>Financial caption</th>
@@ -2108,21 +2333,38 @@ function App() {
               Download All Items
             </button>
           </div>
-          <table className="table">
+          <div className="pbc-editor-table-scroll" role="region" aria-label="Editable PBC items" tabIndex={0}>
+            <table className="table pbc-editor-table">
+              <colgroup>
+                <col className="pbc-editor-col-request" />
+                <col className="pbc-editor-col-description" />
+                <col className="pbc-editor-col-priority" />
+                <col className="pbc-editor-col-risk" />
+                <col className="pbc-editor-col-caption" />
+                <col className="pbc-editor-col-date" />
+                <col className="pbc-editor-col-date" />
+                <col className="pbc-editor-col-activity" />
+                <col className="pbc-editor-col-pending" />
+                <col className="pbc-editor-col-status" />
+                <col className="pbc-editor-col-review" />
+                <col className="pbc-editor-col-remarks" />
+                <col className="pbc-editor-col-action" />
+              </colgroup>
             <thead>
               <tr>
                 <th>Request ID</th>
-                <th style={{ minWidth: '280px' }}>Description</th>
+                <th>Description</th>
                 <th>Priority</th>
                 <th>Risk / Assertion</th>
                 <th>Financial caption</th>
                 <th>Requested Date</th>
                 <th>Due Date</th>
-                <th style={{ minWidth: '160px', whiteSpace: 'nowrap' }}>Uploaded/ Completed Date</th>
+                <th>Uploaded/ Completed Date</th>
                 <th>Pending Days</th>
                 <th>Status</th>
                 <th>Document Review</th>
                 <th>Remarks</th>
+                <th>Action</th>
               </tr>
             </thead>
             <tbody>
@@ -2137,7 +2379,7 @@ function App() {
                       <input value={row.requestId} onChange={(e) => updatePbcRow(index, 'requestId', e.target.value)} />
                     </td>
                     <td>
-                      <input style={{ minWidth: '260px' }} value={row.description} onChange={(e) => updatePbcRow(index, 'description', e.target.value)} />
+                      <input value={row.description} onChange={(e) => updatePbcRow(index, 'description', e.target.value)} />
                     </td>
                     <td>
                       <select
@@ -2163,12 +2405,12 @@ function App() {
                     <td>
                       <input type="date" value={normalizeDateForInput(row.dueDate)} onChange={(e) => updatePbcRow(index, 'dueDate', e.target.value)} />
                     </td>
-                    <td style={{ minWidth: '160px', whiteSpace: 'nowrap', fontSize: '11px' }}>
+                    <td className="pbc-editor-activity-cell">
                       {normalizeDateForInput(row.activityDate)
                         ? new Date(`${normalizeDateForInput(row.activityDate)}T00:00:00`).toLocaleDateString()
                         : '—'}
                     </td>
-                    <td>
+                    <td className="pbc-editor-pending-cell">
                       {(() => {
                         const activityReference = normalizeDateForInput(row.activityDate);
                         const days = calcPendingDays(
@@ -2193,20 +2435,21 @@ function App() {
                         <option value="Completed">Completed</option>
                       </select>
                     </td>
-                    <td>{getDocumentReviewOutcomeLabel(row.documentReviewStatus)}</td>
+                    <td className="pbc-editor-review-cell">{getDocumentReviewOutcomeLabel(row.documentReviewStatus)}</td>
                     <td>
                       <input value={row.remarks} onChange={(e) => updatePbcRow(index, 'remarks', e.target.value)} />
                     </td>
-                    <td>
-                      <button type="button" className="secondary" style={{ whiteSpace: 'nowrap' }} onClick={() => void openItemDetail(row)}>
+                    <td className="pbc-editor-action-cell">
+                      <button type="button" className="secondary pbc-editor-file-button" onClick={() => void openItemDetail(row)}>
                         {session.user.role === 'auditor' ? 'View/Download' : 'Files'}
                       </button>
                     </td>
                   </tr>
                 ))
               )}
-            </tbody>
-          </table>
+              </tbody>
+            </table>
+          </div>
           <div className="actions">
             <button onClick={handleSavePbcEdits} disabled={pbcEditorRows.length === 0}>
               Save Changes

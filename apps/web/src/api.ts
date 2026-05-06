@@ -67,6 +67,10 @@ export function deletePbcList(token: string, pbcListId: string): Promise<{ messa
   return request<{ message: string }>(`/api/pbc-lists/${encodeURIComponent(pbcListId)}`, 'DELETE', token);
 }
 
+export function approvePbcList(token: string, pbcListId: string): Promise<PbcList> {
+  return request<PbcList>(`/api/pbc-lists/${encodeURIComponent(pbcListId)}/approve`, 'PUT', token);
+}
+
 export function downloadPbcTemplate(token: string, clientId?: string): Promise<Blob> {
   const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : '';
   return fetch(resolveApiUrl(`/api/pbc-lists/template${query}`), {
@@ -90,6 +94,15 @@ export function uploadPbcList(token: string, clientId: string, file: File): Prom
   formData.append('file', file);
 
   return request<PbcList>(`/api/pbc-lists/${clientId}`, 'POST', token, formData);
+}
+
+export function generateAutoPbcList(token: string, clientId: string, submissionId?: string): Promise<PbcList> {
+  return request<PbcList>(
+    `/api/pbc-lists/auto-generate/${encodeURIComponent(clientId)}`,
+    'POST',
+    token,
+    submissionId ? { submissionId } : {},
+  );
 }
 
 export function fetchPbcItems(token: string, pbcListId?: string): Promise<PbcItem[]> {
@@ -141,15 +154,25 @@ export function updatePbcItemStatus(token: string, pbcItemId: string, status: st
   return request<PbcItem>(`/api/pbc-items/${encodeURIComponent(pbcItemId)}/status`, 'PUT', token, { status });
 }
 
-export function uploadRequirementFile(token: string, requirementId: string, file: File): Promise<Submission> {
+export function uploadRequirementFile(
+  token: string,
+  requirementId: string,
+  file: File,
+  options?: { replaceExistingTrialBalance?: boolean },
+): Promise<Submission> {
   const formData = new FormData();
   formData.append('file', file);
 
-  return request<Submission>(`/api/uploads/${requirementId}`, 'POST', token, formData);
+  const query = options?.replaceExistingTrialBalance ? '?replaceExistingTrialBalance=true' : '';
+  return request<Submission>(`/api/uploads/${requirementId}${query}`, 'POST', token, formData);
 }
 
 export function fetchSubmissions(token: string): Promise<Submission[]> {
   return request<Submission[]>('/api/uploads', 'GET', token);
+}
+
+export function deleteSubmission(token: string, submissionId: string): Promise<{ message: string }> {
+  return request<{ message: string }>(`/api/uploads/${encodeURIComponent(submissionId)}`, 'DELETE', token);
 }
 
 export function fetchPbcItemFiles(token: string, pbcItemId: string): Promise<PbcItemFile[]> {

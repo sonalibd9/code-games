@@ -19,6 +19,7 @@ export interface Requirement {
   clientId: string;
   title: string;
   description: string;
+  requestedDate?: string;
   dueDate?: string;
   status: 'open' | 'submitted';
 }
@@ -41,7 +42,19 @@ export interface PbcList {
   uploadedAt: string;
   uploadedByUserId: string;
   downloadUrl: string;
+  source: 'uploaded' | 'auto-generated';
+  approvedForClient: boolean;
+  approvedAt?: string;
+  approvedByUserId?: string;
   parsedItemCount?: number;
+  trialBalanceFileName?: string;
+  detectedSubgroups?: string[];
+  matchedSubgroups?: Array<{
+    subgroup: string;
+    financialCaption: string;
+    itemCount: number;
+  }>;
+  unmatchedSubgroups?: string[];
 }
 
 export interface PbcItem {

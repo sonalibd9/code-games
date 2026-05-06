@@ -5,7 +5,8 @@ import multer from 'multer';
 import { Router } from 'express';
 import { env } from '../config/env';
 import { AuthenticatedRequest, requireAuth } from '../middleware/auth';
-import { Notification, notifications, pbcItemFiles, pbcItems, users } from '../models/types';
+import { Notification, notifications, pbcItemFiles, pbcItems, pbcLists, users } from '../models/types';
+import { isPbcListVisibleToClient } from '../utils/pbcVisibility';
 import { broadcastNotification } from './notifications';
 import { z } from 'zod';
 
@@ -31,6 +32,16 @@ const reviewSchema = z.object({
   decision: z.enum(['accepted', 'rejected']),
 });
 
+function canClientAccessPbcItem(pbcItemId: string, clientId?: string): boolean {
+  const item = pbcItems.find((entry) => entry.id === pbcItemId);
+  if (!item || item.clientId !== clientId) {
+    return false;
+  }
+
+  const list = pbcLists.find((entry) => entry.id === item.pbcListId);
+  return isPbcListVisibleToClient(list);
+}
+
 // GET /api/pbc-item-files?pbcItemId=:id  — list files for a PBC item
 router.get('/', requireAuth, (req: AuthenticatedRequest, res) => {
   const { pbcItemId } = req.query;
@@ -46,7 +57,7 @@ router.get('/', requireAuth, (req: AuthenticatedRequest, res) => {
   }
 
   // Auditors see everything; clients only see their own clientId
-  if (req.user?.role === 'client' && item.clientId !== req.user.clientId) {
+  if (req.user?.role === 'client' && !canClientAccessPbcItem(item.id, req.user.clientId)) {
     res.status(403).json({ message: 'Forbidden.' });
     return;
   }
@@ -78,7 +89,7 @@ router.post('/:pbcItemId', requireAuth, (req, res) => {
     const authReq = req as AuthenticatedRequest;
 
     // Clients can only upload to their own items
-    if (authReq.user?.role === 'client' && item.clientId !== authReq.user.clientId) {
+    if (authReq.user?.role === 'client' && !canClientAccessPbcItem(item.id, authReq.user.clientId)) {
       res.status(403).json({ message: 'Forbidden.' });
       return;
     }
@@ -177,7 +188,7 @@ router.delete('/:fileId', requireAuth, (req: AuthenticatedRequest, res) => {
   const file = pbcItemFiles[fileIndex];
 
   // Clients can only delete files in their own clientId
-  if (req.user?.role === 'client' && file.clientId !== req.user.clientId) {
+  if (req.user?.role === 'client' && (file.clientId !== req.user.clientId || !canClientAccessPbcItem(file.pbcItemId, req.user.clientId))) {
     res.status(403).json({ message: 'Forbidden.' });
     return;
   }

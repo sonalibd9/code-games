@@ -15,4 +15,5 @@ export const env = {
   jwtSecret: process.env.JWT_SECRET ?? 'dev-secret-change-me',
   corsOrigin: allowedOrigins,
   maxUploadBytes: Number.isNaN(maxUploadMbRaw) ? 20 * 1024 * 1024 : maxUploadMbRaw * 1024 * 1024,
+  autoPbcTemplatePath: process.env.AUTO_PBC_TEMPLATE_PATH ?? 'c:/Work/Apps/Code Games/New/Final_Big4_SOX_Integrated_PBC_List 2.xlsx',
 };
