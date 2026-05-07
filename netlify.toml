@@ -1,6 +1,6 @@
 [build]
   base    = "apps/web"
-  command = "npm install && sed -i 's|http://localhost:4000|https://code-games-1.onrender.com|g' src/environments/environment.ts src/environments/environment.prod.ts && npm run build:prod"
+  command = "npm install && sed -i 's|http://localhost:4000|https://code-games-1.onrender.com|g' src/environments/environment.ts src/environments/environment.prod.ts src/app/core/services/api.service.ts && npm run build:prod"
   publish = "dist/audit-web/browser"
 
 [build.environment]
