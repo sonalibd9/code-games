@@ -59,6 +59,16 @@ interface TesseractRecognizer {
   recognize: (image: Blob | string, language: string) => Promise<{ data: { text: string } }>;
 }
 
+interface ModalConfig {
+  type: 'confirm' | 'alert' | 'prompt';
+  title?: string;
+  message: string;
+  promptDefaultValue?: string;
+  danger?: boolean;
+  confirmLabel?: string;
+  cancelLabel?: string;
+}
+
 declare global {
   interface Window {
     Tesseract?: TesseractRecognizer;
@@ -1151,6 +1161,98 @@ function App() {
   const previousPageRef = useRef<PageState>('portal');
   const skipHistoryRef = useRef(false);
   const hasLoadedNotificationSnapshotRef = useRef(false);
+  const uploadFileInputRef = useRef<HTMLInputElement | null>(null);
+  const [activeModal, setActiveModal] = useState<ModalConfig | null>(null);
+  const modalResolveRef = useRef<((value: string | boolean | null) => void) | null>(null);
+  const modalInputRef = useRef<HTMLInputElement | null>(null);
+
+  function showConfirm(message: string, options?: { title?: string; danger?: boolean; confirmLabel?: string }): Promise<boolean> {
+    return new Promise((resolve) => {
+      modalResolveRef.current = (value) => resolve(value as boolean);
+      setActiveModal({ type: 'confirm', message, ...options });
+    });
+  }
+
+  function showAlert(message: string, title?: string): Promise<void> {
+    return new Promise((resolve) => {
+      modalResolveRef.current = () => resolve();
+      setActiveModal({ type: 'alert', message, title });
+    });
+  }
+
+  function showPrompt(message: string, defaultValue = ''): Promise<string | null> {
+    return new Promise((resolve) => {
+      modalResolveRef.current = (value) => resolve(value as string | null);
+      setActiveModal({ type: 'prompt', message, promptDefaultValue: defaultValue });
+    });
+  }
+
+  function handleModalConfirm() {
+    const resolve = modalResolveRef.current;
+    const type = activeModal?.type;
+    const inputValue = type === 'prompt' ? (modalInputRef.current?.value ?? '') : undefined;
+    setActiveModal(null);
+    modalResolveRef.current = null;
+    if (resolve) {
+      resolve(type === 'prompt' ? (inputValue ?? '') : true);
+    }
+  }
+
+  function handleModalCancel() {
+    const resolve = modalResolveRef.current;
+    const type = activeModal?.type;
+    setActiveModal(null);
+    modalResolveRef.current = null;
+    if (resolve) {
+      resolve(type === 'prompt' ? null : false);
+    }
+  }
+
+  function renderModal() {
+    if (!activeModal) return null;
+    return (
+      <div
+        className="modal-overlay"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="modal-dialog-title"
+        onClick={(e) => { if (e.target === e.currentTarget) handleModalCancel(); }}
+      >
+        <div className="modal-box">
+          {activeModal.title && <h3 id="modal-dialog-title" className="modal-title">{activeModal.title}</h3>}
+          <p className="modal-message">{activeModal.message}</p>
+          {activeModal.type === 'prompt' && (
+            <input
+              ref={modalInputRef}
+              type="text"
+              className="modal-input"
+              defaultValue={activeModal.promptDefaultValue}
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleModalConfirm();
+                if (e.key === 'Escape') handleModalCancel();
+              }}
+            />
+          )}
+          <div className="modal-actions">
+            {activeModal.type !== 'alert' && (
+              <button type="button" className="modal-btn-secondary" onClick={handleModalCancel}>
+                {activeModal.cancelLabel ?? 'Cancel'}
+              </button>
+            )}
+            <button
+              type="button"
+              className={`modal-btn-primary${activeModal.danger ? ' modal-btn-danger' : ''}`}
+              onClick={handleModalConfirm}
+              autoFocus={activeModal.type !== 'prompt'}
+            >
+              {activeModal.confirmLabel ?? (activeModal.type === 'alert' ? 'OK' : 'Confirm')}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   function playNotificationTing() {
     if (typeof window === 'undefined') {
@@ -2012,7 +2114,7 @@ function App() {
       return;
     }
 
-    const shouldDelete = window.confirm('Delete this uploaded PBC list? This will remove its parsed items as well.');
+    const shouldDelete = await showConfirm('Delete this uploaded PBC list? This will remove its parsed items as well.', { title: 'Delete PBC List', danger: true, confirmLabel: 'Delete' });
     if (!shouldDelete) {
       return;
     }
@@ -2124,8 +2226,9 @@ function App() {
         const confirmMsg = validationIssues
           .map((issue) => `• [${issue.requestId}] ${issue.message}`)
           .join('\n');
-        const userConfirmed = window.confirm(
-          `Validation Warning:\n\n${confirmMsg}\n\nDo you still want to save these items?`
+        const userConfirmed = await showConfirm(
+          `Validation warnings:\n\n${confirmMsg}\n\nDo you still want to save these items?`,
+          { title: 'Validation Warning' }
         );
         if (!userConfirmed) {
           setError('Save cancelled by user.');
@@ -2286,12 +2389,13 @@ function App() {
       });
 
       if (duplicateTrialBalance) {
-        window.alert(`Duplicate file name detected: "${uploadFile.name}" has already been uploaded as a trial balance.`);
+        await showAlert(`Duplicate file name detected: "${uploadFile.name}" has already been uploaded as a trial balance.`, 'Duplicate File Detected');
       }
 
       if (existingFinancialYearTrialBalance) {
-        const shouldReplace = window.confirm(
-          `A trial balance for ${trialBalanceFinancialYearLabel} is already uploaded as "${existingFinancialYearTrialBalance.originalName}".\n\nDo you want to replace it with "${uploadFile.name}"?`,
+        const shouldReplace = await showConfirm(
+          `A trial balance for ${trialBalanceFinancialYearLabel} is already uploaded as "${existingFinancialYearTrialBalance.originalName}". Do you want to replace it with "${uploadFile.name}"?`,
+          { title: 'Replace Trial Balance', danger: true, confirmLabel: 'Replace' },
         );
 
         if (!shouldReplace) {
@@ -2301,7 +2405,7 @@ function App() {
 
         shouldReplaceExistingTrialBalance = true;
       } else if (duplicateTrialBalance) {
-        const shouldContinue = window.confirm(`Do you want to continue and upload "${uploadFile.name}" again?`);
+        const shouldContinue = await showConfirm(`Do you want to continue and upload "${uploadFile.name}" again?`, { title: 'Duplicate File Name' });
 
         if (!shouldContinue) {
           setError('Upload cancelled because a trial balance with the same file name already exists.');
@@ -2316,6 +2420,7 @@ function App() {
       });
       await loadPortalData(session.token, session.user.role);
       setUploadFile(null);
+      if (uploadFileInputRef.current) uploadFileInputRef.current.value = '';
       setSuccessMessage(
         shouldReplaceExistingTrialBalance
           ? `Trial balance for ${trialBalanceFinancialYearLabel} replaced successfully.`
@@ -2349,7 +2454,7 @@ function App() {
       return;
     }
 
-    const shouldDelete = window.confirm(`Delete uploaded trial balance "${submission.originalName}"?`);
+    const shouldDelete = await showConfirm(`Delete the uploaded trial balance "${submission.originalName}"?`, { title: 'Delete Trial Balance', danger: true, confirmLabel: 'Delete' });
     if (!shouldDelete) {
       return;
     }
@@ -2359,6 +2464,10 @@ function App() {
 
     try {
       await deleteSubmission(session.token, submission.id);
+      // Immediately remove from state so the file name disappears without waiting for a full reload
+      setSubmissions((current) => current.filter((s) => s.id !== submission.id));
+      setUploadFile(null);
+      if (uploadFileInputRef.current) uploadFileInputRef.current.value = '';
       await loadPortalData(session.token, session.user.role);
       setSuccessMessage('Trial balance upload deleted successfully. You can upload the corrected file now.');
     } catch (err) {
@@ -2422,7 +2531,7 @@ function App() {
       if (!hasMatchingKeyword && itemKeywords.size > 0) {
         const topKeywords = Array.from(itemKeywords).slice(0, 3).join(', ');
         const confirmMsg = `File name "${itemFileInput.name}" may not match the item description/caption.\n\nExpected keywords like: ${topKeywords}\n\nDo you still want to upload this file?`;
-        const userConfirmed = window.confirm(confirmMsg);
+        const userConfirmed = await showConfirm(confirmMsg, { title: 'File Name Mismatch' });
         if (!userConfirmed) {
           setError('Upload cancelled by user.');
           return;
@@ -2473,7 +2582,8 @@ function App() {
 
   async function handleDeleteItemFile(fileId: string) {
     if (!session || !activePbcItem) return;
-    if (!window.confirm('Delete this file?')) return;
+    const okDelete = await showConfirm('Are you sure you want to delete this file?', { title: 'Delete File', danger: true, confirmLabel: 'Delete' });
+    if (!okDelete) return;
     setError('');
     try {
       await deletePbcItemFile(session.token, fileId);
@@ -2493,12 +2603,11 @@ function App() {
     setSuccessMessage('');
 
     try {
-      const reviewComment = decision === 'rejected'
-        ? window.prompt('Enter the reason for rejection. The client will be able to see this comment.', '')?.trim()
-        : undefined;
-
-      if (decision === 'rejected' && reviewComment === undefined) {
-        return;
+      let reviewComment: string | undefined;
+      if (decision === 'rejected') {
+        const result = await showPrompt('Enter the reason for rejection. The client will be able to see this comment.');
+        if (result === null) return;
+        reviewComment = result.trim();
       }
 
       await reviewPbcItemFile(session.token, fileId, decision, reviewComment);
@@ -3261,8 +3370,8 @@ function App() {
     return null;
   }
 
-  function handleLogout() {
-    const shouldLogout = window.confirm('Are you sure you want to logout?');
+  async function handleLogout() {
+    const shouldLogout = await showConfirm('Are you sure you want to logout?', { title: 'Confirm Logout', confirmLabel: 'Logout' });
     if (!shouldLogout) {
       return;
     }
@@ -3284,6 +3393,7 @@ function App() {
     setPbcFile(null);
     setSelectedRequirementId('');
     setUploadFile(null);
+    if (uploadFileInputRef.current) uploadFileInputRef.current.value = '';
     setActiveAuditorClientId('');
     setAuditFinalisationDate('');
     setActivePbcItem(null);
@@ -3959,7 +4069,7 @@ function App() {
                   </div>
                 ) : null}
               </div>
-              <button type="button" className="secondary brand-logout" onClick={handleLogout}>
+              <button type="button" className="secondary brand-logout" onClick={() => void handleLogout()}>
                 Logout
               </button>
             </div>
@@ -3971,6 +4081,7 @@ function App() {
         {renderQuestionsPanel()}
         {renderSupportChat()}
         {renderSupportChatLauncher()}
+        {renderModal()}
       </>
     );
   }
@@ -5568,6 +5679,7 @@ function App() {
           <input
             id="file"
             type="file"
+            ref={uploadFileInputRef}
             onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
             required
           />
@@ -5599,6 +5711,7 @@ function App() {
             type="button"
             className="danger client-trial-balance-delete"
             disabled={!clientTrialBalanceSubmissions[0]}
+            title={!clientTrialBalanceSubmissions[0] ? 'No trial balance uploaded yet' : 'Delete the uploaded trial balance'}
             onClick={() => {
               const latestTrialBalance = clientTrialBalanceSubmissions[0];
               if (latestTrialBalance) {
