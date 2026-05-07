@@ -12,7 +12,7 @@ import { FAQ_ITEMS } from '@core/models/constants';
             <span class="faq-eyebrow">F&amp;Q</span>
             <h3>Quick answers</h3>
           </div>
-          <button type="button" class="faq-close" aria-label="Close F&Q" (click)="closed.emit()">X</button>
+          <button type="button" class="faq-close" aria-label="Close F&Q" (click)="closed.emit()">&#x2715;</button>
         </div>
         <div class="faq-intro">
           <strong>Find the right path faster.</strong>

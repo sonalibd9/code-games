@@ -1,0 +1,12 @@
+{
+  "files.exclude": {
+    "**/.git": true,
+    "**/node_modules": true,
+    "**/.angular": true,
+    "team-share-local-host": true,
+    "teammate-share-ready": true,
+    "**/.netlify": true
+  },
+  "explorer.fileNesting.enabled": false,
+  "explorer.sortOrder": "default"
+}

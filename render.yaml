@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: audit-api
+    runtime: node
+    rootDir: apps/api
+    buildCommand: npm install && npm run build
+    startCommand: node dist/index.js
+    plan: free
+    region: singapore
+
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 4000
+      - key: JWT_SECRET
+        generateValue: true          # Render auto-generates a secure random secret
+      - key: CORS_ORIGIN
+        value: https://your-netlify-site.netlify.app   # ← replace with your Netlify URL after deploy
+      - key: MAX_UPLOAD_MB
+        value: 20
+
+    healthCheckPath: /health
+    autoDeploy: true

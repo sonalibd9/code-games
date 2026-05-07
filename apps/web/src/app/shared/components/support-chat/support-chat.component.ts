@@ -22,7 +22,7 @@ export interface SupportChatMessage {
             <span class="support-chat-eyebrow">Support</span>
             <h3><span class="support-chat-avatar" aria-hidden="true">{{ auriEmoji }}</span>Auri</h3>
           </div>
-          <button type="button" class="support-chat-close" aria-label="Close support chat" (click)="closed.emit()">X</button>
+          <button type="button" class="support-chat-close" aria-label="Close support chat" (click)="closed.emit()">&#x2715;</button>
         </div>
         <div #messagesEl class="support-chat-messages" aria-live="polite">
           @for (msg of messages; track msg.id) {
