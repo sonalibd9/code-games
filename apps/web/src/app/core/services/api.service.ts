@@ -16,7 +16,7 @@ import {
 
 @Injectable({ providedIn: 'root' })
 export class ApiService {
-  private readonly baseUrl = (environment.apiUrl ?? 'http://localhost:4000').replace(/\/$/, '');
+  private readonly baseUrl = (environment.apiUrl ?? 'https://code-games-1.onrender.com').replace(/\/$/, '');
 
   constructor(private http: HttpClient) {}
 
