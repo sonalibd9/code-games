@@ -6,6 +6,12 @@
 [build.environment]
   NODE_VERSION = "18"
 
+# Disable the auto-installed Angular runtime plugin
+[[plugins]]
+  package = "@netlify/angular-runtime"
+  [plugins.inputs]
+    disable = true
+
 # Angular SPA — send all routes to index.html so client-side routing works
 [[redirects]]
   from = "/*"
