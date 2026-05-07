@@ -1,6 +1,7 @@
 [build]
-  command = "npm install && npm run build -w apps/web"
-  publish = "apps/web/dist/audit-web/browser"
+  base    = "apps/web"
+  command = "npm install && npm run build"
+  publish = "dist/audit-web/browser"
 
 # Angular SPA — send all routes to index.html so client-side routing works
 [[redirects]]
