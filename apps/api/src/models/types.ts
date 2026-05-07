@@ -20,6 +20,7 @@ export interface Requirement {
   clientId: string;
   title: string;
   description: string;
+  requestedDate?: string;
   dueDate?: string;
   status: 'open' | 'submitted';
 }
@@ -46,6 +47,8 @@ export interface PbcList {
   approvedForClient: boolean;
   approvedAt?: string;
   approvedByUserId?: string;
+  trialBalanceSubmissionId?: string;
+  trialBalanceFileName?: string;
 }
 
 export interface PbcItem {
@@ -64,6 +67,7 @@ export interface PbcItem {
   remarks: string;
   updatedAt: string;
   documentReviewStatus?: 'No Document' | 'Pending Review' | 'Accepted' | 'Rejected';
+  documentReviewedAt?: string;
 }
 
 export interface PbcItemFile {
@@ -76,6 +80,7 @@ export interface PbcItemFile {
   uploadedByUserId: string;
   downloadUrl: string;
   reviewStatus: 'pending-review' | 'accepted' | 'rejected';
+  reviewComment?: string;
   reviewedAt?: string;
   reviewedByUserId?: string;
 }
@@ -103,6 +108,7 @@ export interface Notification {
   requirementTitle?: string;
   pbcListId?: string;
   pbcItemId?: string;
+  itemDueDate?: string;
   itemRequestId?: string;
   itemDescription?: string;
   target: NotificationTarget;
@@ -126,6 +132,7 @@ export const requirements: Requirement[] = [
     clientId: 'c1',
     title: 'Trial balance for FY 2025-26',
     description: 'Upload signed trial balance with ledger mapping.',
+    requestedDate: '2026-01-30',
     dueDate: '2026-04-30',
     status: 'open',
   },

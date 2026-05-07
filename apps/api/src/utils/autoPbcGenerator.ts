@@ -294,7 +294,6 @@ export function generateAutoPbcItemsFromTrialBalance(
   const baseCaptions = Array.from(new Set(baseTemplateRows.map((row) => row.financialCaption)));
   const detectedSubgroups = extractTrialBalanceSubgroups(trialBalancePath, baseCaptions);
   const captionToSourceSubgroup = new Map<string, string>();
-  const alwaysIncludedCaptions = new Set<string>();
   const unmatchedSubgroups: string[] = [];
 
   for (const subgroup of detectedSubgroups) {
@@ -312,7 +311,6 @@ export function generateAutoPbcItemsFromTrialBalance(
   for (const caption of ALWAYS_INCLUDE_CAPTIONS) {
     if (baseCaptions.includes(caption) && !captionToSourceSubgroup.has(caption)) {
       captionToSourceSubgroup.set(caption, caption);
-      alwaysIncludedCaptions.add(caption);
     }
   }
 
@@ -332,7 +330,6 @@ export function generateAutoPbcItemsFromTrialBalance(
     });
 
     templateRows.forEach((row) => {
-      const isAlwaysIncluded = alwaysIncludedCaptions.has(caption);
       items.push({
         id: randomUUID(),
         pbcListId,
@@ -346,9 +343,7 @@ export function generateAutoPbcItemsFromTrialBalance(
         dueDate: '',
         activityDate: '',
         status: 'Pending',
-        remarks: isAlwaysIncluded
-          ? `Always included baseline PBC item${row.purpose ? ` (${row.purpose})` : ''}`
-          : `Auto-generated from trial balance subgroup "${subgroup}"${row.purpose ? ` (${row.purpose})` : ''}`,
+        remarks: '',
         updatedAt: now,
       });
     });

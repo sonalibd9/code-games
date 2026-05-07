@@ -152,7 +152,16 @@ function handleAutoGeneratePbc(req: AuthenticatedRequest, res: Response) {
   }
 
   const uploadedAt = new Date().toISOString();
-  const pbcListId = randomUUID();
+  const existingAutoList = pbcLists.find(
+    (item) =>
+      item.clientId === client.id &&
+      item.source === 'auto-generated' &&
+      (
+        item.trialBalanceSubmissionId === trialBalanceSubmission.id ||
+        item.trialBalanceFileName === trialBalanceSubmission.originalName
+      ),
+  );
+  const pbcListId = existingAutoList?.id ?? randomUUID();
 
   try {
     const generated = generateAutoPbcItemsFromTrialBalance(
@@ -201,13 +210,42 @@ function handleAutoGeneratePbc(req: AuthenticatedRequest, res: Response) {
       downloadUrl: `/uploads/${storedName}`,
       source: 'auto-generated' as const,
       approvedForClient: false,
+      trialBalanceSubmissionId: trialBalanceSubmission.id,
+      trialBalanceFileName: trialBalanceSubmission.originalName,
     };
 
-    pbcLists.push(record);
+    if (existingAutoList) {
+      for (let index = pbcItems.length - 1; index >= 0; index -= 1) {
+        if (pbcItems[index].pbcListId === existingAutoList.id) {
+          pbcItems.splice(index, 1);
+        }
+      }
+
+      const previousGeneratedFilePath = path.resolve(__dirname, '../../uploads', existingAutoList.storedName);
+      if (fs.existsSync(previousGeneratedFilePath)) {
+        fs.unlinkSync(previousGeneratedFilePath);
+      }
+
+      existingAutoList.originalName = record.originalName;
+      existingAutoList.storedName = record.storedName;
+      existingAutoList.uploadedAt = record.uploadedAt;
+      existingAutoList.uploadedByUserId = record.uploadedByUserId;
+      existingAutoList.downloadUrl = record.downloadUrl;
+      existingAutoList.approvedForClient = false;
+      existingAutoList.approvedAt = undefined;
+      existingAutoList.approvedByUserId = undefined;
+      existingAutoList.trialBalanceSubmissionId = record.trialBalanceSubmissionId;
+      existingAutoList.trialBalanceFileName = record.trialBalanceFileName;
+    } else {
+      pbcLists.push(record);
+    }
+
     pbcItems.push(...generated.items);
 
-    res.status(201).json({
-      ...record,
+    const responseRecord = existingAutoList ?? record;
+
+    res.status(existingAutoList ? 200 : 201).json({
+      ...responseRecord,
       parsedItemCount: generated.items.length,
       trialBalanceFileName: trialBalanceSubmission.originalName,
       detectedSubgroups: generated.detectedSubgroups,

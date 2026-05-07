@@ -1,4 +1,5 @@
 import path from 'path';
+import { randomUUID } from 'crypto';
 import { Router } from 'express';
 import { z } from 'zod';
 import * as XLSX from 'xlsx';
@@ -25,6 +26,35 @@ function getDocumentReviewStatusForItem(itemId: string): 'No Document' | 'Pendin
   }
 
   return 'Pending Review';
+}
+
+function getDocumentReviewedAtForItem(itemId: string): string | undefined {
+  const files = pbcItemFiles.filter((file) => file.pbcItemId === itemId);
+  if (files.length === 0) {
+    return undefined;
+  }
+
+  const reviewedFiles = files.filter((file) => (file.reviewStatus === 'accepted' || file.reviewStatus === 'rejected') && Boolean(file.reviewedAt));
+  if (reviewedFiles.length === 0) {
+    return undefined;
+  }
+
+  const status = getDocumentReviewStatusForItem(itemId);
+  if (status === 'Pending Review' || status === 'No Document') {
+    return undefined;
+  }
+
+  const eligible = status === 'Rejected'
+    ? reviewedFiles.filter((file) => file.reviewStatus === 'rejected')
+    : reviewedFiles;
+
+  if (eligible.length === 0) {
+    return undefined;
+  }
+
+  return eligible
+    .map((file) => file.reviewedAt as string)
+    .sort((left, right) => new Date(right).getTime() - new Date(left).getTime())[0];
 }
 
 function inferPriorityFromRiskAssertion(value: string): string {
@@ -88,6 +118,126 @@ function isInvalidDueDate(value: string): boolean {
   return /^\d+$/.test(trimmed) && Number(trimmed) < 10000;
 }
 
+function normalizeDateOnly(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  const isoMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoMatch) {
+    return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+  }
+
+  const slashMatch = trimmed.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})$/);
+  if (slashMatch) {
+    const year = slashMatch[3].length === 2 ? `20${slashMatch[3]}` : slashMatch[3];
+    return `${year}-${slashMatch[1].padStart(2, '0')}-${slashMatch[2].padStart(2, '0')}`;
+  }
+
+  if (/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)/i.test(trimmed)) {
+    const parsed = new Date(trimmed);
+    if (!Number.isNaN(parsed.getTime())) {
+      const year = parsed.getFullYear();
+      const month = String(parsed.getMonth() + 1).padStart(2, '0');
+      const day = String(parsed.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    }
+  }
+
+  return '';
+}
+
+function addMonthsToDate(value: string, months: number): string {
+  const normalized = normalizeDateOnly(value);
+  if (!normalized) {
+    return '';
+  }
+
+  const date = new Date(`${normalized}T00:00:00`);
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+
+  date.setMonth(date.getMonth() + months);
+
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function shouldAlignDueDate(item: PbcItem): boolean {
+  const currentDueDate = normalizeDateOnly(item.dueDate);
+  if (currentDueDate) {
+    return false;
+  }
+
+  const expectedDueDate = addMonthsToDate(item.requestedDate, 3);
+  if (!expectedDueDate) {
+    return false;
+  }
+
+  return true;
+}
+
+function alignPbcDueDates(items: PbcItem[]): void {
+  for (const item of items) {
+    if (shouldAlignDueDate(item)) {
+      item.dueDate = addMonthsToDate(item.requestedDate, 3);
+    }
+  }
+}
+
+function getPbcItemIdentityKey(item: Pick<PbcItem, 'requestId' | 'description' | 'owner' | 'riskAssertion'>): string {
+  return [item.requestId, item.description, item.owner, item.riskAssertion]
+    .map((value) => (value ?? '').trim().toLowerCase())
+    .join('|');
+}
+
+function groupCurrentItemsByIdentity(items: PbcItem[]): Map<string, PbcItem[]> {
+  const grouped = new Map<string, PbcItem[]>();
+
+  for (const item of items) {
+    const key = getPbcItemIdentityKey(item);
+    grouped.set(key, [...(grouped.get(key) ?? []), item]);
+  }
+
+  return grouped;
+}
+
+function ensureUniquePbcItemIds(items: PbcItem[]): void {
+  const seen = new Set<string>();
+
+  for (const item of items) {
+    if (!seen.has(item.id)) {
+      seen.add(item.id);
+      continue;
+    }
+
+    item.id = randomUUID();
+    seen.add(item.id);
+  }
+}
+
+function getClientSafeRemarks(item: PbcItem): string {
+  const trimmed = item.remarks.trim();
+  if (
+    trimmed.startsWith('Auto-generated from trial balance subgroup') ||
+    trimmed.startsWith('Always included baseline PBC item')
+  ) {
+    return '';
+  }
+
+  const remarkDate = normalizeDateOnly(trimmed);
+  const itemDates = [item.requestedDate, item.dueDate, item.activityDate, item.updatedAt].map(normalizeDateOnly);
+  if (remarkDate && itemDates.includes(remarkDate)) {
+    return '';
+  }
+
+  return item.remarks;
+}
+
 function repairPbcItemsIfNeeded(pbcListId: string): void {
   const currentItems = pbcItems.filter((item) => item.pbcListId === pbcListId);
   if (currentItems.length === 0) {
@@ -109,15 +259,17 @@ function repairPbcItemsIfNeeded(pbcListId: string): void {
     return;
   }
 
-  const preservedEdits = new Map(currentItems.map((item) => [item.requestId, item]));
+  const preservedEditsByIdentity = groupCurrentItemsByIdentity(currentItems);
   const repairedItems = parsedItems.map((parsed) => {
-    const existing = preservedEdits.get(parsed.requestId);
+    const identityQueue = preservedEditsByIdentity.get(getPbcItemIdentityKey(parsed));
+    const existing = identityQueue?.shift();
     if (!existing) {
       return parsed;
     }
 
     return {
       ...parsed,
+      id: existing.id,
       riskAssertion: existing.riskAssertion || parsed.riskAssertion,
       status: existing.status || parsed.status,
       remarks: existing.remarks || parsed.remarks,
@@ -125,6 +277,7 @@ function repairPbcItemsIfNeeded(pbcListId: string): void {
       updatedAt: existing.updatedAt || parsed.updatedAt,
     };
   });
+  ensureUniquePbcItemIds(repairedItems);
 
   for (let index = pbcItems.length - 1; index >= 0; index -= 1) {
     if (pbcItems[index].pbcListId === pbcListId) {
@@ -143,11 +296,14 @@ router.get('/', requireAuth, (req: AuthenticatedRequest, res) => {
   }
 
   if (req.user?.role === 'auditor') {
-    const result = (pbcListId ? pbcItems.filter((item) => item.pbcListId === pbcListId) : pbcItems)
-      .map((item) => ({
-        ...item,
-        documentReviewStatus: getDocumentReviewStatusForItem(item.id),
-      }));
+    const scoped = pbcListId ? pbcItems.filter((item) => item.pbcListId === pbcListId) : pbcItems;
+    ensureUniquePbcItemIds(scoped);
+    alignPbcDueDates(scoped);
+    const result = scoped.map((item) => ({
+      ...item,
+      documentReviewStatus: getDocumentReviewStatusForItem(item.id),
+      documentReviewedAt: getDocumentReviewedAtForItem(item.id),
+    }));
     res.json(result);
     return;
   }
@@ -158,11 +314,15 @@ router.get('/', requireAuth, (req: AuthenticatedRequest, res) => {
   const scoped = pbcItems.filter(
     (item) => clientListIds.includes(item.pbcListId) && (!pbcListId || item.pbcListId === pbcListId),
   );
+  ensureUniquePbcItemIds(scoped);
+  alignPbcDueDates(scoped);
 
   res.json(
     scoped.map((item) => ({
       ...item,
+      remarks: getClientSafeRemarks(item),
       documentReviewStatus: getDocumentReviewStatusForItem(item.id),
+      documentReviewedAt: getDocumentReviewedAtForItem(item.id),
     })),
   );
 });
@@ -186,6 +346,10 @@ const bulkUpdateSchema = z.object({
 
 const updateStatusSchema = z.object({
   status: z.string().min(1),
+});
+
+const updateRemarksSchema = z.object({
+  remarks: z.string(),
 });
 
 const exportPbcItemsSchema = z.object({
@@ -217,7 +381,41 @@ router.put('/:pbcItemId/status', requireAuth, (req: AuthenticatedRequest, res) =
   }
   current.updatedAt = new Date().toISOString();
 
-  res.json(current);
+  res.json({
+    ...current,
+    remarks: req.user?.role === 'client' ? getClientSafeRemarks(current) : current.remarks,
+    documentReviewStatus: getDocumentReviewStatusForItem(current.id),
+    documentReviewedAt: getDocumentReviewedAtForItem(current.id),
+  });
+});
+
+router.put('/:pbcItemId/remarks', requireAuth, (req: AuthenticatedRequest, res) => {
+  const parseResult = updateRemarksSchema.safeParse(req.body);
+  if (!parseResult.success) {
+    res.status(400).json({ message: 'Invalid remarks update payload.' });
+    return;
+  }
+
+  const current = pbcItems.find((item) => item.id === req.params.pbcItemId);
+  if (!current) {
+    res.status(404).json({ message: 'PBC item not found.' });
+    return;
+  }
+
+  if (req.user?.role === 'client' && !isPbcItemVisibleToClient(current, req.user.clientId)) {
+    res.status(403).json({ message: 'Forbidden.' });
+    return;
+  }
+
+  current.remarks = parseResult.data.remarks;
+  current.updatedAt = new Date().toISOString();
+
+  res.json({
+    ...current,
+    remarks: req.user?.role === 'client' ? getClientSafeRemarks(current) : current.remarks,
+    documentReviewStatus: getDocumentReviewStatusForItem(current.id),
+    documentReviewedAt: getDocumentReviewedAtForItem(current.id),
+  });
 });
 
 router.put('/bulk', requireAuth, requireRole('auditor'), (req, res) => {
@@ -288,6 +486,8 @@ router.post('/export', requireAuth, (req: AuthenticatedRequest, res) => {
     return;
   }
 
+  alignPbcDueDates(scopedItems);
+
   const worksheetRows = scopedItems.map((item) => ({
     requestId: item.requestId,
     description: item.description,
@@ -298,7 +498,7 @@ router.post('/export', requireAuth, (req: AuthenticatedRequest, res) => {
     dueDate: item.dueDate,
     activityDate: item.activityDate,
     status: item.status,
-    remarks: item.remarks,
+    remarks: req.user?.role === 'client' ? getClientSafeRemarks(item) : item.remarks,
     updatedAt: item.updatedAt,
   }));
 

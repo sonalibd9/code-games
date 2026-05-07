@@ -19,6 +19,7 @@ export interface Requirement {
   clientId: string;
   title: string;
   description: string;
+  requestedDate?: string;
   dueDate?: string;
   status: 'open' | 'submitted';
 }
@@ -72,6 +73,7 @@ export interface PbcItem {
   remarks: string;
   updatedAt: string;
   documentReviewStatus?: 'No Document' | 'Pending Review' | 'Accepted' | 'Rejected';
+  documentReviewedAt?: string;
 }
 
 export interface PbcItemFile {
@@ -84,6 +86,7 @@ export interface PbcItemFile {
   uploadedByUserId: string;
   downloadUrl: string;
   reviewStatus: 'pending-review' | 'accepted' | 'rejected';
+  reviewComment?: string;
   reviewedAt?: string;
   reviewedByUserId?: string;
 }
@@ -101,22 +104,18 @@ export interface Notification {
   id: string;
   type: NotificationType;
   clientId: string;
+  message: string;
+  createdAt: string;
+  uploadedAt: string;
+  uploadedByUserId: string;
+  uploadedByEmail: string;
+  fileName: string;
   requirementId?: string;
   requirementTitle?: string;
-  fileName: string;
-  message: string;
-  uploadedAt: string;
-  uploadedByEmail: string;
-  target: NotificationTarget;
+  pbcListId?: string;
+  pbcItemId?: string;
+  itemDueDate?: string;
   itemRequestId?: string;
-}
-
-export interface Session {
-  token: string;
-  user: AuthUser;
-}
-
-export interface LoginResponse {
-  token: string;
-  user: AuthUser;
+  itemDescription?: string;
+  target: NotificationTarget;
 }
