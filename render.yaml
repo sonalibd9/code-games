@@ -16,7 +16,7 @@ services:
       - key: JWT_SECRET
         generateValue: true          # Render auto-generates a secure random secret
       - key: CORS_ORIGIN
-        value: https://code-games-1.netlify.app   # ← update to your actual Netlify URL after first deploy
+        value: https://luminous-queijadas-e6b084.netlify.app,https://69fc7bd3683aa20623be535b--luminous-queijadas-e6b084.netlify.app
       - key: MAX_UPLOAD_MB
         value: 20
 
