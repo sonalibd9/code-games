@@ -7,3 +7,5 @@ apps/api/uploads/*
 **/.env
 .codex/
 APP_SUMMARY-Word-*.docx
+
+.vs/
