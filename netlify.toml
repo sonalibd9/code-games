@@ -1,7 +1,5 @@
 [build]
-  # Inject the API_URL env var (set this in Netlify dashboard → Site settings → Environment variables)
-  # Then build the Angular frontend
-  command = "npm install && sed -i \"s|apiUrl: ''|apiUrl: '${API_URL}'|g\" apps/web/src/environments/environment.prod.ts && npm run build -w apps/web"
+  command = "npm install && npm run build -w apps/web"
   publish = "apps/web/dist/audit-web/browser"
 
 # Angular SPA — send all routes to index.html so client-side routing works

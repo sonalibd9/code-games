@@ -16,7 +16,7 @@ services:
       - key: JWT_SECRET
         generateValue: true          # Render auto-generates a secure random secret
       - key: CORS_ORIGIN
-        value: https://your-netlify-site.netlify.app   # ← replace with your Netlify URL after deploy
+        value: https://code-games-1.netlify.app   # ← update to your actual Netlify URL after first deploy
       - key: MAX_UPLOAD_MB
         value: 20
 
