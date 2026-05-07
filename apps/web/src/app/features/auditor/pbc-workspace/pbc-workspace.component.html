@@ -1,0 +1,48 @@
+<div class="pbc-workspace">
+  <div class="page-header">
+    <button type="button" class="back-btn" (click)="backToClients()">← Back</button>
+    <h2>PBC Workspace – {{ activeClientName }}</h2>
+  </div>
+
+  @if (state.error()) { <p class="error-message" role="alert">{{ state.error() }}</p> }
+  @if (state.successMessage()) { <p class="success-message">{{ state.successMessage() }}</p> }
+
+  <section class="upload-section card">
+    <h3>Upload Detailed PBC List</h3>
+    <input type="file" accept=".xlsx,.csv" (change)="onFileChange($event)" />
+    <button type="button" [disabled]="!pbcFile" (click)="uploadPbcList()">Upload PBC List</button>
+    <button type="button" class="secondary" (click)="generateAutoPbc()">Auto-Generate from Trial Balance</button>
+  </section>
+
+  <section class="pbc-lists-section">
+    <h3>Uploaded PBC Lists</h3>
+    @if (activeClientPbcLists.length === 0) {
+      <p class="muted">No PBC lists uploaded yet for this client.</p>
+    } @else {
+      <ul class="pbc-list-items">
+        @for (list of activeClientPbcLists; track list.id) {
+          <li class="pbc-list-item card">
+            <div class="pbc-list-item-info">
+              <strong>{{ list.originalName }}</strong>
+              <span class="muted">{{ list.uploadedAt | formatDate }}</span>
+              @if (list.source === 'auto-generated') {
+                <span class="badge badge-auto">Auto-generated</span>
+              }
+              @if (list.approvedForClient) {
+                <span class="badge badge-approved">Approved</span>
+              }
+              <span>{{ getStatusCounts(list.id).total }} items</span>
+            </div>
+            <div class="pbc-list-item-actions">
+              <button type="button" (click)="openPbcEditor(list.id)">Open Editor</button>
+              @if (list.source === 'auto-generated' && !list.approvedForClient) {
+                <button type="button" class="secondary" (click)="approvePbcList(list.id)">Approve for Client</button>
+              }
+              <button type="button" class="danger" (click)="deletePbcList(list.id)">Delete</button>
+            </div>
+          </li>
+        }
+      </ul>
+    }
+  </section>
+</div>

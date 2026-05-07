@@ -3,8 +3,9 @@ import { Router } from 'express';
 import { z } from 'zod';
 import * as XLSX from 'xlsx';
 import { AuthenticatedRequest, requireAuth, requireRole } from '../middleware/auth';
-import { pbcItemFiles, pbcItems, pbcLists } from '../models/types';
+import { PbcItem, pbcItemFiles, pbcItems, pbcLists } from '../models/types';
 import { parsePbcItemsFromFile } from '../utils/pbcParser';
+import { isPbcListVisibleToClient } from '../utils/pbcVisibility';
 
 const router = Router();
 
@@ -67,6 +68,15 @@ function inferPriorityFromRiskAssertion(value: string): string {
   }
 
   return 'Low';
+}
+
+function isPbcItemVisibleToClient(item: PbcItem, clientId?: string): boolean {
+  if (item.clientId !== clientId) {
+    return false;
+  }
+
+  const list = pbcLists.find((entry) => entry.id === item.pbcListId);
+  return isPbcListVisibleToClient(list);
 }
 
 function isInvalidDueDate(value: string): boolean {
@@ -142,7 +152,9 @@ router.get('/', requireAuth, (req: AuthenticatedRequest, res) => {
     return;
   }
 
-  const clientListIds = pbcLists.filter((item) => item.clientId === req.user?.clientId).map((item) => item.id);
+  const clientListIds = pbcLists
+    .filter((item) => item.clientId === req.user?.clientId && isPbcListVisibleToClient(item))
+    .map((item) => item.id);
   const scoped = pbcItems.filter(
     (item) => clientListIds.includes(item.pbcListId) && (!pbcListId || item.pbcListId === pbcListId),
   );
@@ -194,7 +206,7 @@ router.put('/:pbcItemId/status', requireAuth, (req: AuthenticatedRequest, res) =
     return;
   }
 
-  if (req.user?.role === 'client' && current.clientId !== req.user.clientId) {
+  if (req.user?.role === 'client' && !isPbcItemVisibleToClient(current, req.user.clientId)) {
     res.status(403).json({ message: 'Forbidden.' });
     return;
   }
@@ -256,7 +268,9 @@ router.post('/export', requireAuth, (req: AuthenticatedRequest, res) => {
   let scopedItems = pbcItems;
 
   if (req.user?.role === 'client') {
-    const clientListIds = pbcLists.filter((item) => item.clientId === req.user?.clientId).map((item) => item.id);
+    const clientListIds = pbcLists
+      .filter((item) => item.clientId === req.user?.clientId && isPbcListVisibleToClient(item))
+      .map((item) => item.id);
     scopedItems = scopedItems.filter((item) => clientListIds.includes(item.pbcListId));
   }
 

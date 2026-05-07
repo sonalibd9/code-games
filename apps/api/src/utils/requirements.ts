@@ -1,4 +1,5 @@
 import { Requirement, clients, pbcLists, requirements, submissions } from '../models/types';
+import { isPbcListVisibleToClient } from './pbcVisibility';
 
 function getDefaultTrialBalanceRequirement(clientId: string): Requirement {
   const defaultRequirementId = `default-tb-${clientId}`;
@@ -20,7 +21,7 @@ function hasTrialBalanceRequirement(clientId: string): boolean {
 }
 
 function hasUploadedPbcList(clientId: string): boolean {
-  return pbcLists.some((item) => item.clientId === clientId);
+  return pbcLists.some((item) => item.clientId === clientId && isPbcListVisibleToClient(item));
 }
 
 export function getEffectiveRequirementsForClient(clientId: string): Requirement[] {

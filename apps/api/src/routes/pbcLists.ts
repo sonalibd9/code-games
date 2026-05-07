@@ -3,11 +3,13 @@ import fs from 'fs';
 import { randomUUID } from 'crypto';
 import multer from 'multer';
 import * as XLSX from 'xlsx';
-import { Router } from 'express';
+import { Response, Router } from 'express';
 import { env } from '../config/env';
 import { AuthenticatedRequest, requireAuth, requireRole } from '../middleware/auth';
-import { clients, pbcItems, pbcLists } from '../models/types';
+import { clients, pbcItems, pbcLists, requirements, submissions } from '../models/types';
+import { generateAutoPbcItemsFromTrialBalance } from '../utils/autoPbcGenerator';
 import { parsePbcItemsFromFile } from '../utils/pbcParser';
+import { isPbcListVisibleToClient } from '../utils/pbcVisibility';
 
 const router = Router();
 
@@ -112,7 +114,131 @@ router.get('/', requireAuth, (req: AuthenticatedRequest, res) => {
     return;
   }
 
-  res.json(pbcLists.filter((item) => item.clientId === req.user?.clientId));
+  res.json(pbcLists.filter((item) => item.clientId === req.user?.clientId && isPbcListVisibleToClient(item)));
+});
+
+function handleAutoGeneratePbc(req: AuthenticatedRequest, res: Response) {
+  const client = clients.find((item) => item.id === req.params.clientId);
+  if (!client) {
+    res.status(404).json({ message: 'Client not found.' });
+    return;
+  }
+
+  const submissionId = typeof req.body?.submissionId === 'string' ? req.body.submissionId : '';
+  const clientTrialBalanceSubmissions = submissions
+    .filter((submission) => {
+      if (submission.clientId !== client.id) {
+        return false;
+      }
+
+      const requirement = requirements.find((item) => item.id === submission.requirementId);
+      return requirement?.title.toLowerCase().includes('trial balance') ?? false;
+    })
+    .sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime());
+
+  const trialBalanceSubmission = submissionId
+    ? clientTrialBalanceSubmissions.find((submission) => submission.id === submissionId)
+    : clientTrialBalanceSubmissions[0];
+
+  if (!trialBalanceSubmission) {
+    res.status(404).json({ message: 'No uploaded trial balance was found for this client.' });
+    return;
+  }
+
+  const trialBalancePath = path.resolve(__dirname, '../../uploads', trialBalanceSubmission.storedName);
+  if (!fs.existsSync(trialBalancePath)) {
+    res.status(404).json({ message: 'The uploaded trial balance file could not be found on the server.' });
+    return;
+  }
+
+  const uploadedAt = new Date().toISOString();
+  const pbcListId = randomUUID();
+
+  try {
+    const generated = generateAutoPbcItemsFromTrialBalance(
+      trialBalancePath,
+      env.autoPbcTemplatePath,
+      pbcListId,
+      client.id,
+      uploadedAt,
+    );
+
+    if (generated.items.length === 0) {
+      res.status(400).json({
+        message: 'No matching PBC template rows were found for the trial balance subgroups.',
+        detectedSubgroups: generated.detectedSubgroups,
+        unmatchedSubgroups: generated.unmatchedSubgroups,
+      });
+      return;
+    }
+
+    const safeClientName = client.name.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const storedName = `auto-pbc-${Date.now()}-${safeClientName}.xlsx`;
+    const storedPath = path.resolve(__dirname, '../../uploads', storedName);
+    const worksheetRows = generated.items.map((item) => ({
+      'Request ID': item.requestId,
+      Description: item.description,
+      Priority: item.priority,
+      'Risk / Assertion': item.riskAssertion,
+      Owner: item.owner,
+      'Requested Date': item.requestedDate,
+      'Due Date': item.dueDate,
+      Status: item.status,
+      Remarks: item.remarks,
+    }));
+    const workbook = XLSX.utils.book_new();
+    const worksheet = XLSX.utils.json_to_sheet(worksheetRows);
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Auto PBC');
+    XLSX.writeFile(workbook, storedPath);
+
+    const record = {
+      id: pbcListId,
+      clientId: client.id,
+      originalName: `Auto PBC - ${client.name} - ${uploadedAt.slice(0, 10)}.xlsx`,
+      storedName,
+      uploadedAt,
+      uploadedByUserId: req.user?.sub ?? 'unknown',
+      downloadUrl: `/uploads/${storedName}`,
+      source: 'auto-generated' as const,
+      approvedForClient: false,
+    };
+
+    pbcLists.push(record);
+    pbcItems.push(...generated.items);
+
+    res.status(201).json({
+      ...record,
+      parsedItemCount: generated.items.length,
+      trialBalanceFileName: trialBalanceSubmission.originalName,
+      detectedSubgroups: generated.detectedSubgroups,
+      matchedSubgroups: generated.matchedSubgroups,
+      unmatchedSubgroups: generated.unmatchedSubgroups,
+    });
+  } catch (error) {
+    res.status(400).json({ message: error instanceof Error ? error.message : 'Could not generate auto PBC list.' });
+  }
+}
+
+router.post('/auto-generate/:clientId', requireAuth, requireRole('auditor'), handleAutoGeneratePbc);
+router.post('/:clientId/auto-generate', requireAuth, requireRole('auditor'), handleAutoGeneratePbc);
+
+router.put('/:pbcListId/approve', requireAuth, requireRole('auditor'), (req: AuthenticatedRequest, res) => {
+  const pbcList = pbcLists.find((item) => item.id === req.params.pbcListId);
+  if (!pbcList) {
+    res.status(404).json({ message: 'PBC list not found.' });
+    return;
+  }
+
+  if (pbcList.source !== 'auto-generated') {
+    res.status(400).json({ message: 'Only auto-generated PBC lists require client approval.' });
+    return;
+  }
+
+  pbcList.approvedForClient = true;
+  pbcList.approvedAt = new Date().toISOString();
+  pbcList.approvedByUserId = req.user?.sub ?? 'unknown';
+
+  res.json(pbcList);
 });
 
 router.post('/:clientId', requireAuth, requireRole('auditor'), (req, res) => {
@@ -141,6 +267,8 @@ router.post('/:clientId', requireAuth, requireRole('auditor'), (req, res) => {
       uploadedAt: new Date().toISOString(),
       uploadedByUserId: (req as AuthenticatedRequest).user?.sub ?? 'unknown',
       downloadUrl: `/uploads/${req.file.filename}`,
+      source: 'uploaded' as const,
+      approvedForClient: true,
     };
 
     const parsedItems = parsePbcItemsFromFile(

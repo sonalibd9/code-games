@@ -1,0 +1,62 @@
+@if (!item) {
+  <p class="muted">No item selected.</p>
+} @else {
+  <div class="pbc-item-detail">
+    <div class="page-header">
+      <button type="button" class="back-btn" (click)="back()">← Back</button>
+      <h2>{{ item.requestId }} – {{ item.description }}</h2>
+    </div>
+
+    @if (state.error()) { <p class="error-message" role="alert">{{ state.error() }}</p> }
+    @if (state.successMessage()) { <p class="success-message">{{ state.successMessage() }}</p> }
+
+    <div class="item-detail-grid card">
+      <div><span class="label">Priority</span><span>{{ item.priority || '–' }}</span></div>
+      <div><span class="label">Owner</span><span>{{ item.owner || '–' }}</span></div>
+      <div><span class="label">Due Date</span><span>{{ item.dueDate | formatDate }}</span></div>
+      <div><span class="label">Status</span>
+        <select [value]="item.status" (change)="updateStatus($any($event.target).value)">
+          <option value="Pending">Pending</option>
+          <option value="In progress">In progress</option>
+          <option value="Completed">Completed</option>
+        </select>
+      </div>
+      <div><span class="label">Risk/Assertion</span><span>{{ item.riskAssertion || '–' }}</span></div>
+      <div><span class="label">Remarks</span><span>{{ item.remarks || '–' }}</span></div>
+    </div>
+
+    <section class="item-files card">
+      <h3>Supporting Documents</h3>
+      @if (files.length === 0) {
+        <p class="muted">No files uploaded yet.</p>
+      } @else {
+        <ul class="file-list">
+          @for (file of files; track file.id) {
+            <li class="file-item">
+              <div class="file-info">
+                <strong>{{ file.originalName }}</strong>
+                <span class="muted">Uploaded {{ file.uploadedAt | formatDate }}</span>
+                <span [class]="'review-status review-status-' + file.reviewStatus">{{ file.reviewStatus }}</span>
+              </div>
+              <div class="file-actions">
+                <a [href]="file.downloadUrl" target="_blank" rel="noopener noreferrer" class="btn secondary">Download</a>
+                @if (auth.isAuditor() && file.reviewStatus === 'pending-review') {
+                  <button type="button" (click)="reviewFile(file.id, 'accepted')">Accept</button>
+                  <button type="button" class="danger" (click)="reviewFile(file.id, 'rejected')">Reject</button>
+                }
+                <button type="button" class="danger" (click)="deleteFile(file.id)">Delete</button>
+              </div>
+            </li>
+          }
+        </ul>
+      }
+
+      @if (auth.isClient()) {
+        <div class="upload-file-form">
+          <input type="file" (change)="onFileChange($event)" />
+          <button type="button" [disabled]="!itemFileInput" (click)="uploadFile()">Upload Document</button>
+        </div>
+      }
+    </section>
+  </div>
+}

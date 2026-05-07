@@ -2,26 +2,42 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
-			"label": "Run Web dev server",
+			"label": "Install dependencies",
 			"type": "shell",
 			"command": "npm",
-			"args": [
-				"run",
-				"dev:web"
-			],
+			"args": ["install"],
+			"group": "build",
+			"presentation": { "reveal": "always", "panel": "shared" }
+		},
+		{
+			"label": "Run Web dev server (Angular)",
+			"type": "shell",
+			"command": "npm",
+			"args": ["run", "dev:web"],
 			"isBackground": true,
-			"group": "build"
+			"group": "build",
+			"problemMatcher": {
+				"owner": "typescript",
+				"pattern": { "regexp": "." },
+				"background": {
+					"activeOnStart": true,
+					"beginsPattern": "Building...",
+					"endsPattern": "compiled successfully"
+				}
+			}
 		},
 		{
 			"label": "Run API dev server",
 			"type": "shell",
 			"command": "npm",
-			"args": [
-				"run",
-				"dev:api"
-			],
+			"args": ["run", "dev:api"],
 			"isBackground": true,
 			"group": "build"
+		},
+		{
+			"label": "Run All (Web + API)",
+			"dependsOn": ["Run Web dev server (Angular)", "Run API dev server"],
+			"group": { "kind": "build", "isDefault": true }
 		}
 	]
 }

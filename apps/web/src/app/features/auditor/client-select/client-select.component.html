@@ -1,0 +1,41 @@
+<div class="auditor-client-select">
+  @if (state.error()) { <p class="error-message" role="alert">{{ state.error() }}</p> }
+  @if (state.successMessage()) { <p class="success-message">{{ state.successMessage() }}</p> }
+
+  <section class="client-select-section">
+    <h2>Select Client</h2>
+    <div class="client-grid">
+      @for (client of state.clients(); track client.id) {
+        <button type="button"
+          [class]="'client-card' + (state.activeAuditorClientId() === client.id ? ' selected' : '')"
+          (click)="selectClient(client.id)">
+          <strong>{{ client.name }}</strong>
+          <span>{{ formatEntityType(client.entityType) }}</span>
+        </button>
+      }
+    </div>
+  </section>
+
+  @if (activeClient) {
+    <section class="client-workspace-section">
+      <h3>{{ activeClient.name }}</h3>
+      <div class="metric-row">
+        <app-metric-card label="PBC Lists" [value]="activeClientPbcLists.length" />
+        <app-metric-card label="Total Items" [value]="pbcStatusCounts.total" />
+        <app-metric-card label="Completed" [value]="pbcStatusCounts.completed" tone="success" />
+        <app-metric-card label="Pending" [value]="pbcStatusCounts.pending" tone="warning" />
+      </div>
+      <app-completion-bar [completed]="pbcStatusCounts.completed" [total]="pbcStatusCounts.total" />
+
+      <div class="client-workspace-actions">
+        <label for="audit-finalisation-date">Audit Finalisation Date</label>
+        <input id="audit-finalisation-date" type="date"
+          [value]="state.auditFinalisationDate()"
+          (change)="setFinalisationDate($any($event.target).value)" />
+        <button type="button" (click)="continueToPbcWorkspace()">Open PBC Workspace</button>
+        <button type="button" class="secondary" (click)="openTrialBalance()">View Trial Balance</button>
+        <button type="button" class="secondary" (click)="downloadTemplate()">Download PBC Template</button>
+      </div>
+    </section>
+  }
+</div>

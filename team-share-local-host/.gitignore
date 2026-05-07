@@ -1,7 +1,0 @@
-node_modules/
-**/node_modules/
-**/dist/
-apps/api/uploads/*
-!apps/api/uploads/.gitkeep
-.env
-**/.env

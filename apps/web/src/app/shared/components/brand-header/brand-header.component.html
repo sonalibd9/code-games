@@ -1,0 +1,64 @@
+<header class="brand-header">
+  <div class="brand-logo-wrap">
+    <span class="brand-dot"></span>
+    <span class="brand-name">Audit Collaboration Hub</span>
+  </div>
+  <nav class="brand-nav" aria-label="Primary">
+    @if (auth.isAuditor()) {
+      <button type="button" class="brand-nav-button"
+        [attr.aria-expanded]="state.isAuditDeskOpen()"
+        (click)="toggleAuditDesk()">Audit Desk</button>
+    }
+    <button type="button" class="brand-nav-button"
+      [attr.aria-expanded]="state.isInsightsOpen()"
+      (click)="toggleInsights()">Insights</button>
+    <button type="button" class="brand-nav-button"
+      [attr.aria-expanded]="state.isFaqOpen()"
+      (click)="toggleFaq()">FAQ</button>
+    @if (auth.isClient()) {
+      <button type="button" class="brand-nav-button"
+        [attr.aria-expanded]="state.isQuestionsOpen()"
+        (click)="toggleQuestions()">Questions</button>
+    }
+    <button type="button" class="brand-nav-button"
+      [attr.aria-expanded]="state.isSupportChatOpen()"
+      (click)="toggleSupportChat()">Support</button>
+  </nav>
+  @if (auth.isLoggedIn()) {
+    <div class="brand-actions">
+      <div class="notification-bell-wrap">
+        <button type="button" class="notification-bell" aria-label="Open notifications"
+          [attr.aria-expanded]="state.isNotificationMenuOpen()"
+          (click)="toggleNotificationMenu()">
+          <svg viewBox="0 0 24 24" aria-hidden="true" class="notification-bell-icon">
+            <path d="M12 3a4 4 0 0 0-4 4v1.1c0 .7-.2 1.4-.6 2L6 12.5c-.5.8-.7 1.8-.3 2.7.4.9 1.2 1.4 2.2 1.4h8.2c1 0 1.8-.5 2.2-1.4.4-.9.2-1.9-.3-2.7L16.6 10c-.4-.6-.6-1.3-.6-2V7a4 4 0 0 0-4-4Zm0 18a2.7 2.7 0 0 0 2.4-1.5h-4.8A2.7 2.7 0 0 0 12 21Z" fill="currentColor" />
+          </svg>
+          @if (notificationCount > 0) {
+            <span class="notification-badge">{{ notificationCount > 9 ? '9+' : notificationCount }}</span>
+          }
+        </button>
+        @if (state.isNotificationMenuOpen()) {
+          <div class="notification-menu">
+            <div class="notification-menu-header">
+              <h3>{{ notificationMenuTitle }}</h3>
+              <span class="notification-menu-count">{{ notificationCount }} active</span>
+            </div>
+            <app-notification-list [items]="notificationFeedItems" variant="menu" />
+          </div>
+        }
+      </div>
+      <button type="button" class="secondary brand-logout" (click)="handleLogout()">Logout</button>
+    </div>
+  }
+</header>
+
+<app-audit-desk-panel [isOpen]="state.isAuditDeskOpen()" (closed)="state.isAuditDeskOpen.set(false)" />
+<app-insights-panel [isOpen]="state.isInsightsOpen()" (closed)="state.isInsightsOpen.set(false)" />
+<app-faq-panel [isOpen]="state.isFaqOpen()" (closed)="state.isFaqOpen.set(false)" />
+@if (auth.isClient()) {
+  <app-questions-panel [isOpen]="state.isQuestionsOpen()" (closed)="state.isQuestionsOpen.set(false)" />
+}
+<app-support-chat
+  [isOpen]="state.isSupportChatOpen()"
+  (closed)="state.isSupportChatOpen.set(false)"
+  (launcherClicked)="state.isSupportChatOpen.set(true)" />

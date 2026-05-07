@@ -1,0 +1,89 @@
+<section class="hero-banner professional">
+  <div class="hero-content">
+    <h1><span class="hero-title-highlight">One stop solution for audit collaboration</span></h1>
+    <p class="hero-copy-highlight">Track PBC evidence, client uploads, document review, and finalisation signals without scattered follow-ups.</p>
+    <div class="hero-chips" aria-label="Portal highlights">
+      <span>Live PBC control</span>
+      <span>Auri assist</span>
+      <span>Client-safe uploads</span>
+    </div>
+  </div>
+  <div class="hero-art portal-hero-visual" aria-hidden="true">
+    <div class="portal-visual-window">
+      <div class="portal-visual-topbar"><span></span><span></span><span></span></div>
+      <div class="portal-visual-body portal-visual-body-branded">
+        <div class="portal-visual-logo-card"><img src="/neuaud-logo-cropped.png" alt="" /></div>
+        <div class="portal-visual-brand-meta"><span></span><span></span><span></span></div>
+      </div>
+    </div>
+    <div class="portal-visual-shield"><span></span></div>
+  </div>
+</section>
+
+<div class="feature-grid portal-feature-grid">
+  <div class="feature-card">
+    <h3>Command-center workspace</h3>
+    <p>Select clients, publish PBC lists, and monitor completion signals from one focused view.</p>
+  </div>
+  <div class="feature-card">
+    <h3>Guided client uploads</h3>
+    <p>Clients see assigned requests and attach evidence directly against the exact PBC item.</p>
+  </div>
+  <div class="feature-card">
+    <h3>Review signals that stand out</h3>
+    <p>Status badges, upload alerts, and document outcomes keep priority follow-ups visible.</p>
+  </div>
+</div>
+
+<section class="login-stage" aria-label="Sign in">
+  <div class="login-preview-panel" aria-hidden="true">
+    <div class="login-preview-topline">
+      <span>Protected portal entry</span>
+      <strong>Smart role routing</strong>
+    </div>
+    <div class="login-preview-window">
+      <div class="preview-window-header"><span></span><span></span><span></span></div>
+      <div class="preview-kpi-row">
+        <div><strong>1</strong><span>Secure sign-in</span></div>
+        <div><strong>2</strong><span>Tailored workspaces</span></div>
+      </div>
+      <div class="preview-timeline">
+        <div><strong>Authenticate securely</strong><span>Credentials decide the right portal view and protect client-only workspaces</span></div>
+        <div><strong>Open assigned workspace</strong><span>Clients and auditors see only the tools, requests, and files relevant to them</span></div>
+        <div><strong>Approve before release</strong><span>Auto PBC lists stay with auditors until they are reviewed and approved for client access</span></div>
+        <div><strong>Auri is online</strong><span>Quick support, FAQs, and insight prompts are available from the main navigation</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card auth-card unified-login-card">
+    <span class="eyebrow">Secure entry</span>
+    <h1>Welcome back</h1>
+    <p class="muted">Use your credentials and the portal will open the right auditor or client experience automatically.</p>
+
+    <form (ngSubmit)="handleLogin()">
+      <label for="login-email">Email</label>
+      <input id="login-email" type="email" [(ngModel)]="email" name="email" placeholder="your@email.com" required autocomplete="email" />
+
+      <label for="login-password">Password</label>
+      <input id="login-password" type="password" [(ngModel)]="password" name="password" placeholder="Password" required autocomplete="current-password" />
+
+      @if (error) { <p class="error-message" role="alert">{{ error }}</p> }
+      @if (passwordResetNotice) { <p class="notice-message">{{ passwordResetNotice }}</p> }
+
+      <button type="submit">Sign in</button>
+      <button type="button" class="secondary" (click)="handleForgotPassword()">Forgot password?</button>
+    </form>
+
+    <div class="demo-credentials-section">
+      <p class="muted demo-label">Demo access – Auditors</p>
+      @for (cred of auditorCredentials; track cred.email) {
+        <button type="button" class="demo-credential-btn" (click)="fillDemo(cred)">{{ cred.label }}</button>
+      }
+      <p class="muted demo-label">Demo access – Clients</p>
+      @for (cred of clientCredentials; track cred.email) {
+        <button type="button" class="demo-credential-btn" (click)="fillDemo(cred)">{{ cred.label }}</button>
+      }
+    </div>
+  </div>
+</section>

@@ -1,0 +1,51 @@
+<div class="client-portal">
+  @if (state.error()) { <p class="error-message" role="alert">{{ state.error() }}</p> }
+  @if (state.successMessage()) { <p class="success-message">{{ state.successMessage() }}</p> }
+
+  <section class="portal-summary">
+    <h2>My Requirements</h2>
+    <div class="metric-row">
+      <app-metric-card label="Open" [value]="requirementSummary.open" tone="warning" />
+      <app-metric-card label="Submitted" [value]="requirementSummary.submitted" tone="success" />
+      @if (requirementSummary.overdue > 0) {
+        <app-metric-card label="Overdue" [value]="requirementSummary.overdue" tone="danger" />
+      }
+    </div>
+  </section>
+
+  <section class="requirements-section card">
+    <h3>Upload Document</h3>
+    <label for="requirement-select">Requirement</label>
+    <select id="requirement-select"
+      [value]="state.selectedRequirementId()"
+      (change)="selectRequirement($any($event.target).value)">
+      @for (req of visibleRequirements; track req.id) {
+        <option [value]="req.id">{{ req.title }} ({{ req.status }})</option>
+      }
+    </select>
+
+    @if (selectedRequirement?.description) {
+      <p class="muted">{{ selectedRequirement?.description }}</p>
+    }
+
+    <input type="file" (change)="onFileChange($event)" />
+    <button type="button" [disabled]="!uploadFile || !state.selectedRequirementId()" (click)="handleUpload()">Upload</button>
+  </section>
+
+  <section class="pbc-section">
+    <h3>PBC Items</h3>
+    @if (state.pbcLists().length === 0) {
+      <p class="muted">No PBC lists available yet. Your auditor will publish one when ready.</p>
+    } @else {
+      <div class="pbc-list-cards">
+        @for (list of state.pbcLists(); track list.id) {
+          <div class="pbc-list-card card">
+            <strong>{{ list.originalName }}</strong>
+            <span class="muted">{{ state.getStatusCountsForList(list.id).total }} items</span>
+            <button type="button" (click)="openPbcItems()">View Items</button>
+          </div>
+        }
+      </div>
+    }
+  </section>
+</div>

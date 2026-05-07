@@ -1,0 +1,65 @@
+<div class="pbc-editor">
+  <div class="page-header">
+    <button type="button" class="back-btn" (click)="backToPbcWorkspace()">← Back</button>
+    <h2>PBC Editor – {{ selectedList?.originalName ?? 'No list selected' }}</h2>
+  </div>
+
+  @if (state.error()) { <p class="error-message" role="alert">{{ state.error() }}</p> }
+  @if (state.successMessage()) { <p class="success-message">{{ state.successMessage() }}</p> }
+
+  <div class="pbc-editor-actions">
+    <button type="button" (click)="savePbcEdits()">Save Changes</button>
+    <button type="button" class="secondary" (click)="downloadUpdated()">Download Updated</button>
+    <button type="button" class="secondary" (click)="downloadAll()">Download All</button>
+  </div>
+
+  @if (state.pbcEditorRows().length === 0) {
+    <p class="muted">No PBC items loaded. Select a list from the PBC Workspace.</p>
+  } @else {
+    <div class="pbc-editor-table-wrap">
+      <table class="pbc-editor-table">
+        <thead>
+          <tr>
+            <th>Request ID</th>
+            <th>Description</th>
+            <th>Priority</th>
+            <th>Risk / Assertion</th>
+            <th>Owner</th>
+            <th>Requested Date</th>
+            <th>Due Date</th>
+            <th>Status</th>
+            <th>Remarks</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (row of state.pbcEditorRows(); track row.id; let i = $index) {
+            <tr>
+              <td><input type="text" [value]="row.requestId" (change)="updateRow(i, 'requestId', $any($event.target).value)" /></td>
+              <td><input type="text" [value]="row.description" (change)="updateRow(i, 'description', $any($event.target).value)" /></td>
+              <td>
+                <select [value]="row.priority" (change)="updateRow(i, 'priority', $any($event.target).value)">
+                  <option value="">–</option>
+                  <option value="High">High</option>
+                  <option value="Medium">Medium</option>
+                  <option value="Low">Low</option>
+                </select>
+              </td>
+              <td><input type="text" [value]="row.riskAssertion" (change)="updateRow(i, 'riskAssertion', $any($event.target).value)" /></td>
+              <td><input type="text" [value]="row.owner" (change)="updateRow(i, 'owner', $any($event.target).value)" /></td>
+              <td><input type="date" [value]="row.requestedDate" (change)="updateRow(i, 'requestedDate', $any($event.target).value)" /></td>
+              <td><input type="date" [value]="row.dueDate" (change)="updateRow(i, 'dueDate', $any($event.target).value)" /></td>
+              <td>
+                <select [value]="row.status" (change)="updateRow(i, 'status', $any($event.target).value)">
+                  <option value="Pending">Pending</option>
+                  <option value="In progress">In progress</option>
+                  <option value="Completed">Completed</option>
+                </select>
+              </td>
+              <td><input type="text" [value]="row.remarks" (change)="updateRow(i, 'remarks', $any($event.target).value)" /></td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  }
+</div>

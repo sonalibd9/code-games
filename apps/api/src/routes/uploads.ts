@@ -1,10 +1,11 @@
 import path from 'path';
+import fs from 'fs';
 import { randomUUID } from 'crypto';
 import multer from 'multer';
 import { Router } from 'express';
 import { env } from '../config/env';
 import { AuthenticatedRequest, requireAuth, requireRole } from '../middleware/auth';
-import { Notification, clients, notifications, requirements, submissions, users } from '../models/types';
+import { Notification, Submission, clients, notifications, requirements, submissions, users } from '../models/types';
 import { broadcastNotification } from './notifications';
 import { getEffectiveRequirementsForClient } from '../utils/requirements';
 
@@ -28,9 +29,38 @@ const upload = multer({
   },
 });
 
+function getFinancialYearKey(requirement: { title: string }) {
+  const match = requirement.title.match(/\bFY\s*\d{4}\s*[-/]\s*\d{2,4}\b/i);
+  return (match ? match[0] : requirement.title).replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function removeSubmissionRecord(submission: Submission) {
+  const submissionIndex = submissions.findIndex((item) => item.id === submission.id);
+  if (submissionIndex >= 0) {
+    submissions.splice(submissionIndex, 1);
+  }
+
+  const uploadedFilePath = path.resolve(__dirname, '../../uploads', submission.storedName);
+  if (fs.existsSync(uploadedFilePath)) {
+    fs.unlinkSync(uploadedFilePath);
+  }
+
+  for (let index = notifications.length - 1; index >= 0; index -= 1) {
+    const notification = notifications[index];
+    if (
+      notification.requirementId === submission.requirementId &&
+      notification.fileName === submission.originalName &&
+      notification.uploadedAt === submission.uploadedAt
+    ) {
+      notifications.splice(index, 1);
+    }
+  }
+}
+
 router.post('/:requirementId', requireAuth, requireRole('client'), upload.single('file'), (req: AuthenticatedRequest, res) => {
   const clientId = req.user?.clientId;
-  const requirement = getEffectiveRequirementsForClient(clientId ?? '').find((item) => item.id === req.params.requirementId);
+  const effectiveRequirements = getEffectiveRequirementsForClient(clientId ?? '');
+  const requirement = effectiveRequirements.find((item) => item.id === req.params.requirementId);
 
   if (!requirement) {
     res.status(404).json({ message: 'Requirement not found.' });
@@ -45,6 +75,38 @@ router.post('/:requirementId', requireAuth, requireRole('client'), upload.single
   if (!req.file) {
     res.status(400).json({ message: 'No file uploaded. Use form-data key: file.' });
     return;
+  }
+
+  const isTrialBalance = requirement.title.toLowerCase().includes('trial balance');
+  const replaceExistingTrialBalance = req.query.replaceExistingTrialBalance === 'true';
+  const financialYearKey = getFinancialYearKey(requirement);
+  const existingTrialBalanceUploads = isTrialBalance
+    ? submissions.filter((item) => {
+        if (item.clientId !== requirement.clientId) {
+          return false;
+        }
+
+        const submissionRequirement = effectiveRequirements.find((effectiveRequirement) => effectiveRequirement.id === item.requirementId);
+        return (
+          submissionRequirement?.title.toLowerCase().includes('trial balance') &&
+          getFinancialYearKey(submissionRequirement) === financialYearKey
+        );
+      })
+    : [];
+
+  if (isTrialBalance && existingTrialBalanceUploads.length > 0 && !replaceExistingTrialBalance) {
+    if (fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+
+    res.status(409).json({
+      message: `A trial balance is already uploaded for ${requirement.title}. Please confirm replacement before uploading another file.`,
+    });
+    return;
+  }
+
+  if (isTrialBalance && replaceExistingTrialBalance) {
+    existingTrialBalanceUploads.forEach(removeSubmissionRecord);
   }
 
   const submission = {
@@ -64,7 +126,6 @@ router.post('/:requirementId', requireAuth, requireRole('client'), upload.single
     storedRequirement.status = 'submitted';
   }
 
-  const isTrialBalance = requirement.title.toLowerCase().includes('trial balance');
   const uploader = users.find((user) => user.id === req.user?.sub);
   const client = clients.find((item) => item.id === requirement.clientId);
 
@@ -93,8 +154,13 @@ router.post('/:requirementId', requireAuth, requireRole('client'), upload.single
   res.status(201).json(submission);
 });
 
-router.get('/', requireAuth, requireRole('auditor'), (_req, res) => {
-  res.json(submissions);
+router.get('/', requireAuth, (req: AuthenticatedRequest, res) => {
+  if (req.user?.role === 'auditor') {
+    res.json(submissions);
+    return;
+  }
+
+  res.json(submissions.filter((submission) => submission.clientId === req.user?.clientId));
 });
 
 router.get('/download/:fileName', requireAuth, requireRole('auditor'), (req: AuthenticatedRequest, res) => {
@@ -116,6 +182,38 @@ router.get('/download/:fileName', requireAuth, requireRole('auditor'), (req: Aut
       }
     }
   });
+});
+
+router.delete('/:submissionId', requireAuth, (req: AuthenticatedRequest, res) => {
+  const submissionIndex = submissions.findIndex((submission) => submission.id === req.params.submissionId);
+  if (submissionIndex < 0) {
+    res.status(404).json({ message: 'Uploaded file was not found.' });
+    return;
+  }
+
+  const submission = submissions[submissionIndex];
+  const requirement = getEffectiveRequirementsForClient(submission.clientId).find((item) => item.id === submission.requirementId);
+  const isTrialBalance = requirement?.title.toLowerCase().includes('trial balance') ?? false;
+
+  if (req.user?.role === 'client' && submission.clientId !== req.user.clientId) {
+    res.status(403).json({ message: 'You can only delete uploads for your own client account.' });
+    return;
+  }
+
+  if (req.user?.role === 'client' && !isTrialBalance) {
+    res.status(403).json({ message: 'Only trial balance uploads can be deleted from the client portal.' });
+    return;
+  }
+
+  removeSubmissionRecord(submission);
+
+  const remainingForRequirement = submissions.some((item) => item.requirementId === submission.requirementId);
+  const storedRequirement = requirements.find((item) => item.id === submission.requirementId);
+  if (storedRequirement && !remainingForRequirement) {
+    storedRequirement.status = 'open';
+  }
+
+  res.json({ message: 'Trial balance upload deleted successfully.' });
 });
 
 export default router;

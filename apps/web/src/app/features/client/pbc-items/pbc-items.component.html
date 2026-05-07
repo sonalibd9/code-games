@@ -1,0 +1,31 @@
+<div class="pbc-items-page">
+  <div class="page-header">
+    <button type="button" class="back-btn" (click)="back()">← Back</button>
+    <h2>PBC Items</h2>
+  </div>
+
+  @if (state.error()) { <p class="error-message" role="alert">{{ state.error() }}</p> }
+
+  @for (list of visiblePbcLists; track list.id) {
+    <section class="pbc-list-section card">
+      <h3>{{ list.originalName }}</h3>
+      <p class="muted">{{ getItemsForList(list.id).length }} items</p>
+      <ul class="pbc-item-rows">
+        @for (item of getItemsForList(list.id); track item.id) {
+          <li class="pbc-item-row">
+            <div class="pbc-item-info">
+              <strong>{{ item.requestId }}</strong>
+              <span>{{ item.description }}</span>
+              <span class="muted">Due {{ item.dueDate | formatDate }}</span>
+              <span [class]="'status-pill status-pill-' + item.status.toLowerCase().replace(' ', '-')">{{ item.status }}</span>
+              @if (item.documentReviewStatus) {
+                <span [class]="'doc-status doc-status-' + item.documentReviewStatus.toLowerCase().replace(' ', '-')">{{ item.documentReviewStatus }}</span>
+              }
+            </div>
+            <button type="button" (click)="openItemDetail(item)">View / Upload</button>
+          </li>
+        }
+      </ul>
+    </section>
+  }
+</div>

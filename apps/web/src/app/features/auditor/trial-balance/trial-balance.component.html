@@ -1,0 +1,28 @@
+<div class="trial-balance-page">
+  <div class="page-header">
+    <button type="button" class="back-btn" (click)="back()">← Back</button>
+    <h2>Trial Balance – {{ activeClientName }}</h2>
+  </div>
+
+  @if (state.error()) { <p class="error-message" role="alert">{{ state.error() }}</p> }
+  @if (state.successMessage()) { <p class="success-message">{{ state.successMessage() }}</p> }
+
+  @if (clientSubmissions.length === 0) {
+    <p class="muted">No trial balance uploads found for this client.</p>
+  } @else {
+    <ul class="submission-list">
+      @for (s of clientSubmissions; track s.id) {
+        <li class="submission-item card">
+          <div class="submission-item-info">
+            <strong>{{ s.originalName }}</strong>
+            <span class="muted">Uploaded {{ s.uploadedAt | formatDate }}</span>
+          </div>
+          <div class="submission-item-actions">
+            <a [href]="'#'" class="btn secondary">Download</a>
+            <button type="button" class="danger" (click)="deleteSubmission(s)">Delete</button>
+          </div>
+        </li>
+      }
+    </ul>
+  }
+</div>
