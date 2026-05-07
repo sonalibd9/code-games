@@ -369,6 +369,39 @@ router.put('/:fileId/review', requireAuth, (req: AuthenticatedRequest, res) => {
     }
 
     relatedItem.updatedAt = reviewedAt;
+
+    const reviewer = users.find((user) => user.id === req.user?.sub);
+    const uploader = users.find((user) => user.id === file.uploadedByUserId);
+    const decisionLabel = parseResult.data.decision === 'accepted' ? 'accepted' : 'rejected';
+    const notification: Notification = {
+      id: randomUUID(),
+      type: 'pbc-item-file-reviewed',
+      clientId: relatedItem.clientId,
+      message: `Auditor ${decisionLabel} "${file.originalName}" for PBC item ${relatedItem.requestId}.`,
+      createdAt: reviewedAt,
+      uploadedAt: reviewedAt,
+      uploadedByUserId: file.uploadedByUserId,
+      uploadedByEmail: uploader?.email ?? 'client',
+      fileName: file.originalName,
+      pbcListId: relatedItem.pbcListId,
+      pbcItemId: relatedItem.id,
+      itemDueDate: relatedItem.dueDate,
+      itemRequestId: relatedItem.requestId,
+      itemDescription: relatedItem.description,
+      reviewStatus: parseResult.data.decision,
+      reviewComment: file.reviewComment,
+      reviewedAt,
+      reviewedByUserId: req.user.sub,
+      reviewedByEmail: reviewer?.email ?? 'auditor',
+      target: {
+        page: 'pbc-item-detail',
+        pbcListId: relatedItem.pbcListId,
+        pbcItemId: relatedItem.id,
+      },
+    };
+
+    notifications.unshift(notification);
+    broadcastNotification(notification);
   }
 
   res.json(file);

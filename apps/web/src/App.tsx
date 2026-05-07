@@ -47,12 +47,28 @@ interface NotificationFeedItem {
 type PageState = 'portal' | 'auditor-client-select' | 'auditor-pbc' | 'trial-balance' | 'pbc-editor' | 'client-pbc-items' | 'pbc-item-detail' | 'ai-document-scanner';
 
 interface DocumentInsights {
+  documentType: string;
+  name: string;
   clientName: string;
+  companyName: string;
+  email: string;
+  phone: string;
+  address: string;
   bankName: string;
   accountNumber: string;
+  ifscCode: string;
+  iban: string;
+  swiftCode: string;
+  taxId: string;
+  gstin: string;
+  documentNumber: string;
+  invoiceNumber: string;
+  documentDate: string;
   amount: string;
   currency: string;
   validUntil: string;
+  detectedFields: Array<{ label: string; value: string }>;
+  textLines: string[];
 }
 
 interface TesseractRecognizer {
@@ -277,23 +293,217 @@ function inferPriorityFromRiskAssertion(value: string): string {
 }
 
 function extractDocumentInsights(text: string): DocumentInsights {
-  const normalized = text.replace(/\r/g, '\n');
+  const normalized = text
+    .replace(/\r/g, '\n')
+    .replace(/[|]+/g, ' | ')
+    .replace(/[ \t]+/g, ' ');
+  const lines = normalized
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
   const singleLine = normalized.replace(/\s+/g, ' ').trim();
 
-  const clientNameMatch = normalized.match(/(?:client\s*name|customer\s*name|account\s*holder)\s*[:\-]\s*([^\n]+)/i);
-  const bankNameMatch = normalized.match(/(?:bank\s*name|beneficiary\s*bank|bank)\s*[:\-]\s*([^\n]+)/i);
-  const accountMatch = normalized.match(/(?:account\s*(?:number|no\.?)|a\/c\s*(?:number|no\.?))\s*[:\-]?\s*([A-Z0-9\-]{6,24})/i);
-  const amountMatch = singleLine.match(/(?:amount|total|value)\s*[:\-]?\s*((?:\d{1,3}(?:,\d{3})*|\d+)(?:\.\d{1,2})?)/i);
+  const cleanValue = (value = '') =>
+    value
+      .replace(/^[\s:;,\-|]+/, '')
+      .replace(/[\s;|]+$/, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+
+  const findLabelValue = (
+    labels: string[],
+    options: { exclude?: RegExp[]; maxLength?: number } = {},
+  ) => {
+    const labelPattern = labels.join('|');
+    const maxLength = options.maxLength ?? 120;
+
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      if (options.exclude?.some((pattern) => pattern.test(line))) {
+        continue;
+      }
+
+      const sameLineMatch = line.match(new RegExp(`^(?:${labelPattern})\\s*(?:[:\\-|]|\\s{2,})\\s*(.+)$`, 'i'));
+      if (sameLineMatch) {
+        const value = cleanValue(sameLineMatch[1]);
+        if (value && value.length <= maxLength) {
+          return value;
+        }
+      }
+
+      const labelOnlyMatch = line.match(new RegExp(`^(?:${labelPattern})\\s*[:\\-|]?\\s*$`, 'i'));
+      if (labelOnlyMatch) {
+        const value = cleanValue(lines[index + 1] ?? '');
+        if (value && value.length <= maxLength) {
+          return value;
+        }
+      }
+    }
+
+    return '';
+  };
+
+  const findFirst = (patterns: RegExp[]) => {
+    for (const pattern of patterns) {
+      const match = singleLine.match(pattern) ?? normalized.match(pattern);
+      const value = cleanValue(match?.[1] ?? '');
+      if (value) {
+        return value;
+      }
+    }
+
+    return '';
+  };
+
+  const detectDocumentType = () => {
+    const lower = singleLine.toLowerCase();
+    if (/\btax invoice\b|\binvoice\b/.test(lower)) return 'Invoice';
+    if (/\bbank statement\b|\baccount statement\b/.test(lower)) return 'Bank statement';
+    if (/\btrial balance\b/.test(lower)) return 'Trial balance';
+    if (/\baudit report\b|\bindependent auditor/.test(lower)) return 'Audit report';
+    if (/\bpurchase order\b|\bpo number\b/.test(lower)) return 'Purchase order';
+    if (/\bpassport\b/.test(lower)) return 'Passport';
+    if (/\bpan\b/.test(lower) && /\bincome tax\b|\bpermanent account/.test(lower)) return 'PAN card';
+    if (/\bgstin\b|\bgst registration\b/.test(lower)) return 'GST document';
+    if (/\bagreement\b|\bcontract\b/.test(lower)) return 'Agreement';
+    if (/\bcertificate\b/.test(lower)) return 'Certificate';
+    return '';
+  };
+
+  const name = findLabelValue(
+    ['name', 'full\\s*name', 'applicant\\s*name', 'beneficiary\\s*name', 'customer\\s*name', 'account\\s*holder', 'account\\s*name'],
+    { exclude: [/bank\s*name/i, /company\s*name/i, /client\s*name/i, /entity\s*name/i] },
+  );
+  const clientName = findLabelValue(['client\\s*name', 'customer\\s*name', 'account\\s*holder', 'entity\\s*name']);
+  const companyName = findLabelValue(['company\\s*name', 'organisation\\s*name', 'organization\\s*name', 'entity\\s*name', 'firm\\s*name']);
+  const bankName = findLabelValue(['bank\\s*name', 'beneficiary\\s*bank', 'issuing\\s*bank', 'bank'], { maxLength: 80 });
+  const address = findLabelValue(
+    ['registered\\s*address', 'billing\\s*address', 'shipping\\s*address', 'address', 'ship\\s*to', 'bill\\s*to'],
+    { maxLength: 180 },
+  );
+
+  const email = findFirst([/\b([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})\b/i]);
+  const phone = findFirst([
+    /(?:phone|mobile|contact|tel)\s*[:\-]?\s*(\+?\d[\d\s().-]{7,}\d)/i,
+    /\b(\+?\d[\d\s().-]{8,}\d)\b/,
+  ]);
+  const accountNumber = findFirst([
+    /(?:account\s*(?:number|no\.?)|a\/c\s*(?:number|no\.?)|acct\s*(?:number|no\.?))\s*[:\-]?\s*([A-Z0-9\-]{6,34})/i,
+  ]);
+  const ifscCode = findFirst([/\b([A-Z]{4}0[A-Z0-9]{6})\b/i]);
+  const iban = findFirst([/\b([A-Z]{2}\d{2}[A-Z0-9]{11,30})\b/i]);
+  const swiftCode = findFirst([/(?:swift|bic)\s*(?:code)?\s*[:\-]?\s*([A-Z]{6}[A-Z0-9]{2}(?:[A-Z0-9]{3})?)/i]);
+  const gstin = findFirst([/\b(\d{2}[A-Z]{5}\d{4}[A-Z][A-Z0-9]Z[A-Z0-9])\b/i]);
+  const pan = findFirst([/\b([A-Z]{5}\d{4}[A-Z])\b/i]);
+  const taxId = findLabelValue(['tax\\s*id', 'tin', 'ein', 'vat\\s*number', 'pan']) || pan;
+  const invoiceNumber = findLabelValue(['invoice\\s*(?:number|no\\.?)', 'tax\\s*invoice\\s*(?:number|no\\.?)', 'bill\\s*(?:number|no\\.?)']);
+  const documentNumber = findLabelValue([
+    'document\\s*(?:number|no\\.?)',
+    'reference\\s*(?:number|no\\.?)',
+    'ref\\s*(?:number|no\\.?)',
+    'certificate\\s*(?:number|no\\.?)',
+    'receipt\\s*(?:number|no\\.?)',
+    'order\\s*(?:number|no\\.?)',
+    'po\\s*(?:number|no\\.?)',
+  ]);
+  const documentDate = findLabelValue([
+    'document\\s*date',
+    'invoice\\s*date',
+    'issue\\s*date',
+    'date',
+    'dated',
+  ], { maxLength: 40 }) || findFirst([
+    /\b(\d{4}[-/]\d{1,2}[-/]\d{1,2})\b/,
+    /\b(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})\b/,
+    /\b(\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+\d{2,4})\b/i,
+  ]);
+  const validUntil = findLabelValue([
+    'valid\\s*(?:until|till|through|up\\s*to)',
+    'expiry\\s*date',
+    'expiration\\s*date',
+    'validity',
+  ], { maxLength: 50 });
+  const amount = findFirst([
+    /(?:grand\s*total|invoice\s*total|net\s*payable|amount\s*due|amount|total|value|balance)\s*[:\-]?\s*((?:INR|USD|EUR|GBP|AED|AUD|CAD|SGD|JPY|CHF|CNY|NPR|PKR|LKR|Rs\.?)?\s*(?:\d{1,3}(?:,\d{3})*|\d+)(?:\.\d{1,2})?)/i,
+    /\b((?:INR|USD|EUR|GBP|AED|AUD|CAD|SGD|JPY|CHF|CNY|NPR|PKR|LKR|Rs\.?)\s*(?:\d{1,3}(?:,\d{3})*|\d+)(?:\.\d{1,2})?)\b/i,
+  ]);
   const currencyMatch = singleLine.match(/\b(INR|USD|EUR|GBP|AED|AUD|CAD|SGD|JPY|CHF|CNY|NPR|PKR|LKR)\b/i);
-  const validityMatch = normalized.match(/(?:valid\s*(?:until|till|through)|expiry\s*date|expiration\s*date)\s*[:\-]\s*([^\n]+)/i);
+  const currency = currencyMatch?.[1]?.toUpperCase() ?? (/Rs\.?/i.test(amount) ? 'INR' : '');
+
+  const seenFields = new Set<string>();
+  const detectedFields: Array<{ label: string; value: string }> = [];
+  const addDetectedField = (labelValue: string, fieldValue: string) => {
+    const label = cleanValue(labelValue);
+    const value = cleanValue(fieldValue);
+    const key = `${label.toLowerCase()}:${value.toLowerCase()}`;
+    if (label && value && label.length <= 64 && value.length <= 220 && !seenFields.has(key)) {
+      seenFields.add(key);
+      detectedFields.push({ label, value });
+    }
+  };
+
+  for (const line of lines) {
+    const directMatch =
+      line.match(/^([A-Za-z][A-Za-z0-9 /().#&_-]{1,60})\s*(?:[:|]| - |--)\s*(.{1,180})$/) ??
+      line.match(/^([A-Za-z][A-Za-z0-9 /().#&_-]{1,60})\s{2,}(.{1,180})$/);
+    if (directMatch) {
+      addDetectedField(directMatch[1], directMatch[2]);
+    }
+  }
+
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    const labelOnlyMatch = lines[index].match(/^([A-Za-z][A-Za-z0-9 /().#&_-]{1,60})\s*[:\-]$/);
+    if (labelOnlyMatch) {
+      addDetectedField(labelOnlyMatch[1], lines[index + 1]);
+    }
+  }
+
+  [
+    ['Document Type', detectDocumentType()],
+    ['Name', name],
+    ['Client / Customer', clientName],
+    ['Company / Entity', companyName],
+    ['Email', email],
+    ['Phone', phone],
+    ['Address', address],
+    ['Bank Name', bankName],
+    ['Account Number', accountNumber],
+    ['IFSC', ifscCode],
+    ['IBAN', iban],
+    ['SWIFT / BIC', swiftCode],
+    ['Tax ID / PAN', taxId],
+    ['GSTIN', gstin],
+    ['Document No.', documentNumber],
+    ['Invoice No.', invoiceNumber],
+    ['Document Date', documentDate],
+    ['Amount', amount],
+    ['Currency', currency],
+    ['Valid Until', validUntil],
+  ].forEach(([label, value]) => addDetectedField(label, value));
 
   return {
-    clientName: clientNameMatch?.[1]?.trim() ?? '',
-    bankName: bankNameMatch?.[1]?.trim() ?? '',
-    accountNumber: accountMatch?.[1]?.trim() ?? '',
-    amount: amountMatch?.[1]?.trim() ?? '',
-    currency: currencyMatch?.[1]?.toUpperCase() ?? '',
-    validUntil: validityMatch?.[1]?.trim() ?? '',
+    documentType: detectDocumentType(),
+    name,
+    clientName,
+    companyName,
+    email,
+    phone,
+    address,
+    bankName,
+    accountNumber,
+    ifscCode: ifscCode.toUpperCase(),
+    iban: iban.toUpperCase(),
+    swiftCode: swiftCode.toUpperCase(),
+    taxId: taxId.toUpperCase(),
+    gstin: gstin.toUpperCase(),
+    documentNumber,
+    invoiceNumber,
+    documentDate,
+    amount,
+    currency,
+    validUntil,
+    detectedFields,
+    textLines: lines,
   };
 }
 
@@ -1657,6 +1867,12 @@ function App() {
   };
 
   const getNotificationCategory = (notification: Notification) => {
+    if (notification.type === 'pbc-item-file-reviewed') {
+      return notification.reviewStatus === 'accepted'
+        ? { label: 'Accepted', badge: 'OK' }
+        : { label: 'Rejected', badge: 'FIX' };
+    }
+
     if (notification.target.page === 'trial-balance') {
       return { label: 'Trial balance', badge: 'TB' };
     }
@@ -1680,8 +1896,19 @@ function App() {
     return normalizeDateForInput(itemDueDate);
   };
 
+  const getNotificationEventDate = (notification: Notification) =>
+    notification.reviewedAt ?? notification.uploadedAt ?? notification.createdAt;
+
   const getNotificationSummary = (notification: Notification) => {
     const clientName = getClientLabel(notification.clientId);
+
+    if (notification.type === 'pbc-item-file-reviewed') {
+      const requestLabel = notification.itemRequestId ? ` for ${notification.itemRequestId}` : '';
+      const commentText = notification.reviewComment ? ` Comment: ${notification.reviewComment}` : '';
+      return notification.reviewStatus === 'accepted'
+        ? `Auditor accepted "${notification.fileName}"${requestLabel}.${commentText}`
+        : `Auditor rejected "${notification.fileName}"${requestLabel}. Please review and upload the corrected document.${commentText}`;
+    }
 
     if (notification.target.page === 'trial-balance') {
       return `Uploaded trial balance for ${clientName}.`;
@@ -1828,22 +2055,24 @@ function App() {
         setActiveAuditorClientId(defaultClientId);
       }
     } else {
-      setAuditorNotifications([]);
+      setAuditorNotifications(await fetchNotifications(token));
     }
   }
 
   async function refreshClientDashboardData(token: string) {
-    const [reqs, pbcData, pbcItemsData, submissionList] = await Promise.all([
+    const [reqs, pbcData, pbcItemsData, submissionList, notificationList] = await Promise.all([
       fetchRequirements(token),
       fetchPbcLists(token),
       fetchPbcItems(token),
       fetchSubmissions(token),
+      fetchNotifications(token),
     ]);
 
     setRequirements(reqs);
     setPbcLists(pbcData);
     setPbcAllItems(pbcItemsData);
     setSubmissions(submissionList);
+    setAuditorNotifications(notificationList);
     setSelectedRequirementId((current) => (current ? current : reqs[0]?.id ?? ''));
 
     if (pbcData.length > 0) {
@@ -1855,7 +2084,7 @@ function App() {
   }
 
   useEffect(() => {
-    if (!session || session.user.role !== 'auditor') {
+    if (!session) {
       return;
     }
 
@@ -2792,6 +3021,19 @@ function App() {
     setCurrentPage('ai-document-scanner');
   }
 
+  function handleAiDocumentScannerBack() {
+    setError('');
+    setSuccessMessage('');
+    setScannerError('');
+
+    if (hasPreviousPage) {
+      handleBackNavigation();
+      return;
+    }
+
+    setCurrentPage('portal');
+  }
+
   function handleScannerFileChange(file: File | null) {
     setScannerFile(file);
     setScannerExtractedText('');
@@ -3134,15 +3376,17 @@ function App() {
   }
 
   async function handleNotificationNavigate(notification: Notification) {
-    if (!session || session.user.role !== 'auditor') {
+    if (!session) {
       return;
     }
 
     setError('');
     setSuccessMessage('');
     setIsNotificationMenuOpen(false);
-    setActiveAuditorClientId(notification.clientId);
-    setPbcClientId(notification.clientId);
+    if (session.user.role === 'auditor') {
+      setActiveAuditorClientId(notification.clientId);
+      setPbcClientId(notification.clientId);
+    }
 
     try {
       if (notification.target.page === 'trial-balance') {
@@ -3208,7 +3452,7 @@ function App() {
           title: notification.fileName,
           categoryLabel: category.label,
           summary: getNotificationSummary(notification),
-          dateTime: notification.uploadedAt,
+          dateTime: getNotificationEventDate(notification),
           primaryMeta: getClientLabel(notification.clientId),
           secondaryMeta: dueDate ? `Due ${formatDateLabel(dueDate)}` : notification.uploadedByEmail,
           actionLabel: getNotificationLinkLabel(notification),
@@ -3227,6 +3471,27 @@ function App() {
         feedItems.push(item);
       }
     };
+
+    auditorNotifications.forEach((notification) => {
+      const category = getNotificationCategory(notification);
+      const dueDate = getNotificationPbcItemDueDate(notification);
+
+      pushItem({
+        id: notification.id,
+        title: notification.itemRequestId ?? notification.fileName,
+        categoryLabel: category.label,
+        summary: getNotificationSummary(notification),
+        dateTime: getNotificationEventDate(notification),
+        primaryMeta: notification.fileName,
+        secondaryMeta: notification.reviewComment
+          ? 'Auditor comment added'
+          : dueDate
+            ? `Due ${formatDateLabel(dueDate)}`
+            : notification.reviewedByEmail ?? 'Auditor review',
+        actionLabel: getNotificationLinkLabel(notification),
+        onOpen: () => void handleNotificationNavigate(notification),
+      });
+    });
 
     visiblePbcItems
       .filter((item) => item.documentReviewStatus === 'Rejected')
@@ -4489,7 +4754,10 @@ function App() {
       <main className="page brand-shell ai-scanner-page">
         {renderBrandHeader()}
         {renderBackControls('top')}
-        <section className="hero-banner compact">
+        <section className="hero-banner compact ai-scanner-hero">
+          <button type="button" className="ai-scanner-back-button" onClick={handleAiDocumentScannerBack}>
+            Back to Previous Page
+          </button>
           <h1>AI Document Scanner</h1>
           <p>Upload document images to run OCR and extract key fields like client name, bank details, amount, currency, and validity.</p>
         </section>
@@ -4523,14 +4791,67 @@ function App() {
             <div className="ai-scanner-panel">
               <h2>Extracted Information</h2>
               {scannerInsights ? (
-                <div className="ai-scanner-results">
-                  <div><span>Client Name</span><strong>{scannerInsights.clientName || '-'}</strong></div>
-                  <div><span>Bank Name</span><strong>{scannerInsights.bankName || '-'}</strong></div>
-                  <div><span>Account Number</span><strong>{scannerInsights.accountNumber || '-'}</strong></div>
-                  <div><span>Amount</span><strong>{scannerInsights.amount || '-'}</strong></div>
-                  <div><span>Currency</span><strong>{scannerInsights.currency || '-'}</strong></div>
-                  <div><span>Validity</span><strong>{scannerInsights.validUntil || '-'}</strong></div>
-                </div>
+                <>
+                  <div className="ai-scanner-summary-strip">
+                    <span>{scannerInsights.detectedFields.length} details fetched</span>
+                    <span>{scannerInsights.textLines.length} OCR lines read</span>
+                  </div>
+
+                  <div className="ai-scanner-results">
+                    {[
+                      ['Document Type', scannerInsights.documentType],
+                      ['Name', scannerInsights.name],
+                      ['Client / Customer', scannerInsights.clientName],
+                      ['Company / Entity', scannerInsights.companyName],
+                      ['Email', scannerInsights.email],
+                      ['Phone', scannerInsights.phone],
+                      ['Address', scannerInsights.address],
+                      ['Bank Name', scannerInsights.bankName],
+                      ['Account Number', scannerInsights.accountNumber],
+                      ['IFSC', scannerInsights.ifscCode],
+                      ['IBAN', scannerInsights.iban],
+                      ['SWIFT / BIC', scannerInsights.swiftCode],
+                      ['Tax ID / PAN', scannerInsights.taxId],
+                      ['GSTIN', scannerInsights.gstin],
+                      ['Document No.', scannerInsights.documentNumber],
+                      ['Invoice No.', scannerInsights.invoiceNumber],
+                      ['Document Date', scannerInsights.documentDate],
+                      ['Amount', scannerInsights.amount],
+                      ['Currency', scannerInsights.currency],
+                      ['Valid Until', scannerInsights.validUntil],
+                    ].map(([label, value]) => (
+                      <div key={label}>
+                        <span>{label}</span>
+                        <strong>{value || '-'}</strong>
+                      </div>
+                    ))}
+                  </div>
+
+                  {scannerInsights.detectedFields.length > 0 ? (
+                    <div className="ai-scanner-detected-fields">
+                      <h3>All Detected Details</h3>
+                      <div className="ai-scanner-results">
+                        {scannerInsights.detectedFields.map((field) => (
+                          <div key={`${field.label}-${field.value}`}>
+                            <span>{field.label}</span>
+                            <strong>{field.value}</strong>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {scannerInsights.textLines.length > 0 ? (
+                    <div className="ai-scanner-detected-fields">
+                      <h3>All OCR Lines</h3>
+                      <ol className="ai-scanner-line-list">
+                        {scannerInsights.textLines.map((line, index) => (
+                          <li key={`${index}-${line}`}>{line}</li>
+                        ))}
+                      </ol>
+                    </div>
+                  ) : null}
+                </>
               ) : (
                 <p className="muted">Run OCR to view extracted document fields.</p>
               )}
@@ -4566,7 +4887,7 @@ function App() {
       <main className="page brand-shell auditor-home-page">
         {renderBrandHeader()}
         {renderBackControls('top')}
-        <section className="hero-banner compact auditor-home-hero">
+        <section className="hero-banner compact auditor-portal-hero auditor-home-hero">
           <h1>Select client workspace</h1>
           <p>Choose a client to continue with PBC upload and dashboard monitoring.</p>
         </section>
@@ -4776,7 +5097,7 @@ function App() {
       <main className="page brand-shell">
         {renderBrandHeader()}
         {renderBackControls('top')}
-        <section className="hero-banner compact">
+        <section className="hero-banner compact auditor-portal-hero">
           <h1>PBC workspace</h1>
           <p>
             {selectedClient
@@ -5002,7 +5323,7 @@ function App() {
       <main className="page brand-shell">
         {renderBrandHeader()}
         {renderBackControls('top')}
-        <section className="hero-banner compact">
+        <section className="hero-banner compact client-portal-hero">
           <h1>{activePbcListForClient.originalName}</h1>
           <p>Review items and upload supporting documents for each request.</p>
         </section>
@@ -5030,6 +5351,7 @@ function App() {
                 <col className="client-pbc-col-days" />
                 <col className="client-pbc-col-status" />
                 <col className="client-pbc-col-review" />
+                <col className="client-pbc-col-reviewed-at" />
                 <col className="client-pbc-col-remarks" />
                 <col className="client-pbc-col-files" />
               </colgroup>
@@ -5045,6 +5367,7 @@ function App() {
                   <th>Pending / Overdue</th>
                   <th>Status</th>
                   <th>Document Review</th>
+                  <th>Reviewed At</th>
                   <th>Remarks</th>
                   <th>Files</th>
                 </tr>
@@ -5052,7 +5375,7 @@ function App() {
               <tbody>
                 {clientItemRows.length === 0 ? (
                   <tr>
-                    <td colSpan={12}>
+                    <td colSpan={13}>
                       <div className="table-empty-state">
                         <strong>No items found</strong>
                         <span>Your auditor-approved PBC items will appear here once available.</span>
@@ -5079,6 +5402,7 @@ function App() {
                           </span>
                         </td>
                         <td className="client-pbc-review-cell">{getDocumentReviewOutcomeLabel(item.documentReviewStatus)}</td>
+                        <td className="client-pbc-reviewed-at-cell">{item.documentReviewedAt ? formatNotificationTime(item.documentReviewedAt) : '-'}</td>
                         <td className="client-pbc-remarks-cell">
                           <input
                             className="client-pbc-remarks-input"
@@ -5113,7 +5437,7 @@ function App() {
       <main className="page brand-shell">
         {renderBrandHeader()}
         {renderBackControls('top')}
-        <section className="hero-banner compact">
+        <section className={`hero-banner compact ${session.user.role === 'client' ? 'client-portal-hero' : 'auditor-portal-hero'}`}>
           <h1>Item: {activePbcItem.requestId}</h1>
           <p>{activePbcItem.description}</p>
         </section>
@@ -5299,7 +5623,7 @@ function App() {
       <main className="page brand-shell">
         {renderBrandHeader()}
         {renderBackControls('top')}
-        <section className="hero-banner compact">
+        <section className="hero-banner compact auditor-portal-hero">
           <h1>Trial Balance Submissions</h1>
           <p>Review all trial balance uploads from clients.</p>
         </section>
@@ -5608,7 +5932,7 @@ function App() {
     <main className="page brand-shell">
       {renderBrandHeader()}
       {renderBackControls('top')}
-      <section className="hero-banner compact">
+      <section className={`hero-banner compact ${session.user.role === 'client' ? 'client-portal-hero' : 'auditor-portal-hero'}`}>
         <h1>AI-powered solutions for audit professionals</h1>
         <p>Track requirements, manage PBC lists, and monitor submission status.</p>
       </section>
@@ -5635,7 +5959,7 @@ function App() {
         </a>
       ) : null}
 
-      <section className="workspace-intro">
+      <section className={`workspace-intro ${session.user.role === 'client' ? 'workspace-intro-client' : 'workspace-intro-auditor'}`}>
         <div>
           <span className="eyebrow">Signed in workspace</span>
           <h1>Audit Client Portal</h1>
@@ -5643,7 +5967,9 @@ function App() {
             Logged in as <strong>{session.user.email}</strong> ({session.user.role})
           </p>
         </div>
-        <span className="role-pill">{session.user.role === 'auditor' ? 'Auditor access' : 'Client access'}</span>
+        <span className={`role-pill ${session.user.role === 'client' ? 'role-pill-client' : 'role-pill-auditor'}`}>
+          {session.user.role === 'auditor' ? 'Auditor access' : 'Client access'}
+        </span>
       </section>
 
       <section className="metric-grid workspace-metrics" aria-label="Portal summary">

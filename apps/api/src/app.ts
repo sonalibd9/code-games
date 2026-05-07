@@ -72,8 +72,8 @@ app.use(express.json({ limit: '2mb' }));
 app.use(morgan('tiny'));
 app.use(
   rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 300,
+    windowMs: env.rateLimitWindowMs,
+    max: env.rateLimitMax,
     standardHeaders: true,
     legacyHeaders: false,
   }),

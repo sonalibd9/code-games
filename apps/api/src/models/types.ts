@@ -85,7 +85,11 @@ export interface PbcItemFile {
   reviewedByUserId?: string;
 }
 
-export type NotificationType = 'trial-balance-uploaded' | 'requirement-uploaded' | 'pbc-item-file-uploaded';
+export type NotificationType =
+  | 'trial-balance-uploaded'
+  | 'requirement-uploaded'
+  | 'pbc-item-file-uploaded'
+  | 'pbc-item-file-reviewed';
 
 export interface NotificationTarget {
   page: 'trial-balance' | 'portal' | 'pbc-item-detail';
@@ -111,6 +115,11 @@ export interface Notification {
   itemDueDate?: string;
   itemRequestId?: string;
   itemDescription?: string;
+  reviewStatus?: 'accepted' | 'rejected';
+  reviewComment?: string;
+  reviewedAt?: string;
+  reviewedByUserId?: string;
+  reviewedByEmail?: string;
   target: NotificationTarget;
 }
 

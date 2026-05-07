@@ -3,6 +3,12 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const maxUploadMbRaw = Number(process.env.MAX_UPLOAD_MB ?? '20');
+const isProduction = process.env.NODE_ENV === 'production';
+
+function readPositiveNumber(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
 
 const rawOrigins = process.env.CORS_ORIGIN ?? 'http://localhost:5173';
 export const allowedOrigins: string[] = rawOrigins
@@ -16,4 +22,6 @@ export const env = {
   corsOrigin: allowedOrigins,
   maxUploadBytes: Number.isNaN(maxUploadMbRaw) ? 20 * 1024 * 1024 : maxUploadMbRaw * 1024 * 1024,
   autoPbcTemplatePath: process.env.AUTO_PBC_TEMPLATE_PATH ?? 'c:/Work/Apps/Code Games/New/Final_Big4_SOX_Integrated_PBC_List 2.xlsx',
+  rateLimitWindowMs: readPositiveNumber(process.env.RATE_LIMIT_WINDOW_MS, 15 * 60 * 1000),
+  rateLimitMax: readPositiveNumber(process.env.RATE_LIMIT_MAX, isProduction ? 300 : 5000),
 };
