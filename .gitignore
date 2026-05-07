@@ -7,3 +7,7 @@ apps/api/uploads/*
 **/.env
 .codex/
 APP_SUMMARY-Word-*.docx
+
+# Angular build artifacts
+.angular/
+**/*.tsbuildinfo

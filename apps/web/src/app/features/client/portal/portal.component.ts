@@ -4,6 +4,7 @@ import { firstValueFrom } from 'rxjs';
 import { AuthService } from '@core/services/auth.service';
 import { PortalStateService } from '@core/services/portal-state.service';
 import { ApiService } from '@core/services/api.service';
+import { ConfirmDialogService } from '@core/services/confirm-dialog.service';
 import { Requirement, Submission } from '@core/models/types';
 import { calcPendingDays, formatDateLabel, normalizeDateForInput, getFinancialYearLabel } from '@core/utils/pbc-utils';
 import { FormatDatePipe } from '@shared/pipes/format-date.pipe';
@@ -25,6 +26,7 @@ export class PortalComponent {
   protected state = inject(PortalStateService);
   private api = inject(ApiService);
   private router = inject(Router);
+  private confirmDialog = inject(ConfirmDialogService);
 
   uploadFile: File | null = null;
   formatDateLabel = formatDateLabel;
@@ -94,7 +96,13 @@ export class PortalComponent {
         return sr ? getFinancialYearKey(sr) === fyKey : s.requirementId === reqId;
       });
       if (existingFy) {
-        const shouldReplace = window.confirm(`A trial balance for ${fyLabel} is already uploaded as "${existingFy.originalName}".\n\nDo you want to replace it with "${this.uploadFile.name}"?`);
+        const shouldReplace = await this.confirmDialog.confirm({
+          title: 'Replace trial balance',
+          message: `A trial balance for ${fyLabel} is already uploaded as "${existingFy.originalName}". Do you want to replace it with "${this.uploadFile.name}"?`,
+          confirmLabel: 'Replace',
+          cancelLabel: 'Keep existing',
+          danger: true,
+        });
         if (!shouldReplace) {
           this.state.error.set(`Upload cancelled because a trial balance for ${fyLabel} already exists.`);
           return;

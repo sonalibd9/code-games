@@ -119,3 +119,13 @@ export interface Notification {
   itemDescription?: string;
   target: NotificationTarget;
 }
+
+export interface LoginResponse {
+  token: string;
+  user: AuthUser;
+}
+
+export interface Session {
+  token: string;
+  user: AuthUser;
+}

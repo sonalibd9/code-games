@@ -4,6 +4,7 @@ import { firstValueFrom } from 'rxjs';
 import { AuthService } from '@core/services/auth.service';
 import { PortalStateService } from '@core/services/portal-state.service';
 import { ApiService } from '@core/services/api.service';
+import { ConfirmDialogService } from '@core/services/confirm-dialog.service';
 import { Submission } from '@core/models/types';
 import { formatDateLabel } from '@core/utils/pbc-utils';
 import { FormatDatePipe } from '@shared/pipes/format-date.pipe';
@@ -20,6 +21,7 @@ export class TrialBalanceComponent {
   protected state = inject(PortalStateService);
   private api = inject(ApiService);
   private router = inject(Router);
+  private confirmDialog = inject(ConfirmDialogService);
 
   formatDateLabel = formatDateLabel;
 
@@ -40,7 +42,14 @@ export class TrialBalanceComponent {
   async deleteSubmission(submission: Submission): Promise<void> {
     const token = this.auth.token();
     if (!token) return;
-    if (!window.confirm(`Delete uploaded trial balance "${submission.originalName}"?`)) return;
+    const confirmed = await this.confirmDialog.confirm({
+      title: 'Delete trial balance',
+      message: `Delete uploaded trial balance "${submission.originalName}"?`,
+      confirmLabel: 'Delete',
+      cancelLabel: 'Cancel',
+      danger: true,
+    });
+    if (!confirmed) return;
     this.state.error.set('');
     try {
       await firstValueFrom(this.api.deleteSubmission(token, submission.id));

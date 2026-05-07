@@ -1,6 +1,7 @@
 export * from './audit-desk-panel/audit-desk-panel.component';
 export * from './brand-header/brand-header.component';
 export * from './completion-bar/completion-bar.component';
+export * from './confirm-dialog/confirm-dialog.component';
 export * from './faq-panel/faq-panel.component';
 export * from './insights-panel/insights-panel.component';
 export * from './metric-card/metric-card.component';

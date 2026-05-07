@@ -5,6 +5,7 @@ import { firstValueFrom } from 'rxjs';
 import { AuthService } from '@core/services/auth.service';
 import { PortalStateService } from '@core/services/portal-state.service';
 import { ApiService } from '@core/services/api.service';
+import { ConfirmDialogService } from '@core/services/confirm-dialog.service';
 import { PbcList } from '@core/models/types';
 import { formatDateLabel, normalizeDateForInput, calculateDueDate, inferPriorityFromRiskAssertion, downloadBlob } from '@core/utils/pbc-utils';
 import { FormatDatePipe } from '@shared/pipes/format-date.pipe';
@@ -22,6 +23,7 @@ export class PbcWorkspaceComponent {
   protected state = inject(PortalStateService);
   private api = inject(ApiService);
   private router = inject(Router);
+  private confirmDialog = inject(ConfirmDialogService);
 
   pbcFile: File | null = null;
   formatDateLabel = formatDateLabel;
@@ -85,7 +87,14 @@ export class PbcWorkspaceComponent {
   async deletePbcList(listId: string): Promise<void> {
     const token = this.auth.token();
     if (!token) return;
-    if (!window.confirm('Delete this uploaded PBC list? This will remove its parsed items as well.')) return;
+    const confirmed = await this.confirmDialog.confirm({
+      title: 'Delete PBC list',
+      message: 'Delete this uploaded PBC list? This will also remove all its parsed items.',
+      confirmLabel: 'Delete',
+      cancelLabel: 'Cancel',
+      danger: true,
+    });
+    if (!confirmed) return;
     this.state.error.set('');
     try {
       await firstValueFrom(this.api.deletePbcList(token, listId));

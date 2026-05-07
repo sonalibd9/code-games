@@ -4,6 +4,7 @@ import { firstValueFrom } from 'rxjs';
 import { AuthService } from '@core/services/auth.service';
 import { PortalStateService } from '@core/services/portal-state.service';
 import { ApiService } from '@core/services/api.service';
+import { ConfirmDialogService } from '@core/services/confirm-dialog.service';
 import { PbcItemFile } from '@core/models/types';
 import { FormatDatePipe } from '@shared/pipes/format-date.pipe';
 
@@ -19,6 +20,7 @@ export class PbcItemDetailComponent {
   protected state = inject(PortalStateService);
   private api = inject(ApiService);
   private router = inject(Router);
+  private confirmDialog = inject(ConfirmDialogService);
 
   itemFileInput: File | null = null;
 
@@ -54,7 +56,14 @@ export class PbcItemDetailComponent {
     const token = this.auth.token();
     const item = this.item;
     if (!token || !item) return;
-    if (!window.confirm('Delete this file?')) return;
+    const confirmed = await this.confirmDialog.confirm({
+      title: 'Delete file',
+      message: 'Are you sure you want to delete this file?',
+      confirmLabel: 'Delete',
+      cancelLabel: 'Cancel',
+      danger: true,
+    });
+    if (!confirmed) return;
     this.state.error.set('');
     try {
       await firstValueFrom(this.api.deletePbcItemFile(token, fileId));

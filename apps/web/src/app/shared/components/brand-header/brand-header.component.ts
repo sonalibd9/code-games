@@ -8,6 +8,7 @@ import {
 import { Router } from '@angular/router';
 import { AuthService } from '@core/services/auth.service';
 import { PortalStateService } from '@core/services/portal-state.service';
+import { ConfirmDialogService } from '@core/services/confirm-dialog.service';
 import { InsightsPanelComponent } from '../insights-panel/insights-panel.component';
 import { FaqPanelComponent } from '../faq-panel/faq-panel.component';
 import { QuestionsPanelComponent } from '../questions-panel/questions-panel.component';
@@ -33,6 +34,7 @@ export class BrandHeaderComponent {
   protected auth = inject(AuthService);
   protected state = inject(PortalStateService);
   private router = inject(Router);
+  private confirmDialog = inject(ConfirmDialogService);
 
   get notificationFeedItems(): NotificationFeedItem[] {
     // Notification feed items are computed in the parent pages and passed via state
@@ -117,8 +119,14 @@ export class BrandHeaderComponent {
     this.state.isNotificationMenuOpen.set(false);
   }
 
-  handleLogout(): void {
-    if (!window.confirm('Are you sure you want to logout?')) return;
+  async handleLogout(): Promise<void> {
+    const confirmed = await this.confirmDialog.confirm({
+      title: 'Log out',
+      message: 'Are you sure you want to log out?',
+      confirmLabel: 'Log out',
+      cancelLabel: 'Cancel',
+    });
+    if (!confirmed) return;
     this.auth.clearSession();
     this.state.resetPortalData();
     this.router.navigate(['/login']);
