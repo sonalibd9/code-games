@@ -11,3 +11,7 @@ APP_SUMMARY-Word-*.docx
 # Angular build artifacts
 .angular/
 **/*.tsbuildinfo
+
+# Visual Studio temp folders
+.vs/
+**/.vs/
