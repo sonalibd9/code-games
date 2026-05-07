@@ -30,7 +30,105 @@ const upload = multer({
 
 const reviewSchema = z.object({
   decision: z.enum(['accepted', 'rejected']),
+  reviewComment: z.string().optional(),
 });
+
+const downloadAllSchema = z.object({
+  pbcListId: z.string().min(1),
+});
+
+const crcTable = new Uint32Array(256);
+for (let index = 0; index < 256; index += 1) {
+  let value = index;
+  for (let bit = 0; bit < 8; bit += 1) {
+    value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+  }
+  crcTable[index] = value >>> 0;
+}
+
+function crc32(buffer: Buffer): number {
+  let crc = 0xffffffff;
+  for (const byte of buffer) {
+    crc = crcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function getDosDateTime(date = new Date()): { date: number; time: number } {
+  const year = Math.max(date.getFullYear(), 1980);
+  const dosDate = ((year - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate();
+  const dosTime = (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2);
+  return { date: dosDate, time: dosTime };
+}
+
+function sanitizeArchiveName(value: string): string {
+  return value
+    .replace(/[<>:"\\|?*\x00-\x1f]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120) || 'file';
+}
+
+function createZipArchive(entries: Array<{ archiveName: string; content: Buffer }>): Buffer {
+  const localParts: Buffer[] = [];
+  const centralParts: Buffer[] = [];
+  let offset = 0;
+  const { date, time } = getDosDateTime();
+
+  for (const entry of entries) {
+    const nameBuffer = Buffer.from(entry.archiveName.replace(/\\/g, '/'));
+    const checksum = crc32(entry.content);
+    const localHeader = Buffer.alloc(30);
+    localHeader.writeUInt32LE(0x04034b50, 0);
+    localHeader.writeUInt16LE(20, 4);
+    localHeader.writeUInt16LE(0x0800, 6);
+    localHeader.writeUInt16LE(0, 8);
+    localHeader.writeUInt16LE(time, 10);
+    localHeader.writeUInt16LE(date, 12);
+    localHeader.writeUInt32LE(checksum, 14);
+    localHeader.writeUInt32LE(entry.content.length, 18);
+    localHeader.writeUInt32LE(entry.content.length, 22);
+    localHeader.writeUInt16LE(nameBuffer.length, 26);
+    localHeader.writeUInt16LE(0, 28);
+
+    localParts.push(localHeader, nameBuffer, entry.content);
+
+    const centralHeader = Buffer.alloc(46);
+    centralHeader.writeUInt32LE(0x02014b50, 0);
+    centralHeader.writeUInt16LE(20, 4);
+    centralHeader.writeUInt16LE(20, 6);
+    centralHeader.writeUInt16LE(0x0800, 8);
+    centralHeader.writeUInt16LE(0, 10);
+    centralHeader.writeUInt16LE(time, 12);
+    centralHeader.writeUInt16LE(date, 14);
+    centralHeader.writeUInt32LE(checksum, 16);
+    centralHeader.writeUInt32LE(entry.content.length, 20);
+    centralHeader.writeUInt32LE(entry.content.length, 24);
+    centralHeader.writeUInt16LE(nameBuffer.length, 28);
+    centralHeader.writeUInt16LE(0, 30);
+    centralHeader.writeUInt16LE(0, 32);
+    centralHeader.writeUInt16LE(0, 34);
+    centralHeader.writeUInt16LE(0, 36);
+    centralHeader.writeUInt32LE(0, 38);
+    centralHeader.writeUInt32LE(offset, 42);
+    centralParts.push(centralHeader, nameBuffer);
+
+    offset += localHeader.length + nameBuffer.length + entry.content.length;
+  }
+
+  const centralDirectory = Buffer.concat(centralParts);
+  const endRecord = Buffer.alloc(22);
+  endRecord.writeUInt32LE(0x06054b50, 0);
+  endRecord.writeUInt16LE(0, 4);
+  endRecord.writeUInt16LE(0, 6);
+  endRecord.writeUInt16LE(entries.length, 8);
+  endRecord.writeUInt16LE(entries.length, 10);
+  endRecord.writeUInt32LE(centralDirectory.length, 12);
+  endRecord.writeUInt32LE(offset, 16);
+  endRecord.writeUInt16LE(0, 20);
+
+  return Buffer.concat([...localParts, centralDirectory, endRecord]);
+}
 
 function canClientAccessPbcItem(pbcItemId: string, clientId?: string): boolean {
   const item = pbcItems.find((entry) => entry.id === pbcItemId);
@@ -43,6 +141,24 @@ function canClientAccessPbcItem(pbcItemId: string, clientId?: string): boolean {
 }
 
 // GET /api/pbc-item-files?pbcItemId=:id  — list files for a PBC item
+function getItemReviewStatus(pbcItemId: string): 'pending-review' | 'accepted' | 'rejected' {
+  const files = pbcItemFiles.filter((entry) => entry.pbcItemId === pbcItemId);
+  if (files.length === 0) {
+    return 'pending-review';
+  }
+
+  const statuses = files.map((entry) => entry.reviewStatus ?? 'pending-review');
+  if (statuses.some((status) => status === 'rejected')) {
+    return 'rejected';
+  }
+
+  if (statuses.every((status) => status === 'accepted')) {
+    return 'accepted';
+  }
+
+  return 'pending-review';
+}
+
 router.get('/', requireAuth, (req: AuthenticatedRequest, res) => {
   const { pbcItemId } = req.query;
   if (!pbcItemId || typeof pbcItemId !== 'string') {
@@ -72,7 +188,72 @@ router.get('/', requireAuth, (req: AuthenticatedRequest, res) => {
   );
 });
 
-// POST /api/pbc-item-files/:pbcItemId  — upload a file for a PBC item (client or auditor)
+// GET /api/pbc-item-files/download-all?pbcListId=:id - download all client uploads for a PBC list
+router.get('/download-all', requireAuth, (req: AuthenticatedRequest, res) => {
+  const parseResult = downloadAllSchema.safeParse(req.query);
+  if (!parseResult.success) {
+    res.status(400).json({ message: 'pbcListId query param is required.' });
+    return;
+  }
+
+  const list = pbcLists.find((entry) => entry.id === parseResult.data.pbcListId);
+  if (!list) {
+    res.status(404).json({ message: 'PBC list not found.' });
+    return;
+  }
+
+  if (req.user?.role === 'client' && (list.clientId !== req.user.clientId || !isPbcListVisibleToClient(list))) {
+    res.status(403).json({ message: 'Forbidden.' });
+    return;
+  }
+
+  const listItems = pbcItems.filter((item) => item.pbcListId === list.id);
+  const listItemIds = new Set(listItems.map((item) => item.id));
+  const itemsById = new Map(listItems.map((item) => [item.id, item]));
+  const clientUserIds = new Set(users.filter((user) => user.role === 'client').map((user) => user.id));
+  const seenArchiveNames = new Set<string>();
+
+  const entries = pbcItemFiles
+    .filter((file) => listItemIds.has(file.pbcItemId) && clientUserIds.has(file.uploadedByUserId))
+    .flatMap((file, index) => {
+      const filePath = path.resolve(__dirname, '../../uploads', file.storedName);
+      if (!fs.existsSync(filePath)) {
+        return [];
+      }
+
+      const item = itemsById.get(file.pbcItemId);
+      const itemLabel = sanitizeArchiveName(
+        `${item?.requestId ?? 'PBC Item'} - ${item?.description ?? 'Uploaded files'}`,
+      );
+      const fileLabel = sanitizeArchiveName(file.originalName);
+      let archiveName = `${String(index + 1).padStart(3, '0')} - ${itemLabel}/${fileLabel}`;
+      let duplicateIndex = 2;
+
+      while (seenArchiveNames.has(archiveName.toLowerCase())) {
+        const extension = path.extname(fileLabel);
+        const baseName = extension ? fileLabel.slice(0, -extension.length) : fileLabel;
+        archiveName = `${String(index + 1).padStart(3, '0')} - ${itemLabel}/${baseName} (${duplicateIndex})${extension}`;
+        duplicateIndex += 1;
+      }
+
+      seenArchiveNames.add(archiveName.toLowerCase());
+      return [{ archiveName, content: fs.readFileSync(filePath) }];
+    });
+
+  if (entries.length === 0) {
+    res.status(404).json({ message: 'No client-uploaded PBC files found for this list.' });
+    return;
+  }
+
+  const safeListName = sanitizeArchiveName(list.originalName.replace(/\.[^.]+$/, ''));
+  const zipBuffer = createZipArchive(entries);
+
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', `attachment; filename="pbc-client-files-${safeListName}.zip"`);
+  res.send(zipBuffer);
+});
+
+// POST /api/pbc-item-files/:pbcItemId - upload a file for a PBC item (client or auditor)
 router.post('/:pbcItemId', requireAuth, (req, res) => {
   upload.single('file')(req, res, (error?: unknown) => {
     if (error instanceof Error) {
@@ -113,6 +294,10 @@ router.post('/:pbcItemId', requireAuth, (req, res) => {
 
     pbcItemFiles.push(record);
     item.activityDate = record.uploadedAt;
+    if (authReq.user?.role === 'client' && item.status === 'Pending') {
+      item.status = 'In progress';
+    }
+    item.updatedAt = record.uploadedAt;
 
     if (authReq.user?.role === 'client') {
       const uploader = users.find((user) => user.id === authReq.user?.sub);
@@ -128,6 +313,7 @@ router.post('/:pbcItemId', requireAuth, (req, res) => {
         fileName: record.originalName,
         pbcListId: item.pbcListId,
         pbcItemId: item.id,
+        itemDueDate: item.dueDate,
         itemRequestId: item.requestId,
         itemDescription: item.description,
         target: {
@@ -165,12 +351,23 @@ router.put('/:fileId/review', requireAuth, (req: AuthenticatedRequest, res) => {
 
   const reviewedAt = new Date().toISOString();
   file.reviewStatus = parseResult.data.decision;
+  file.reviewComment = parseResult.data.decision === 'rejected' ? (parseResult.data.reviewComment ?? '').trim() : '';
   file.reviewedAt = reviewedAt;
   file.reviewedByUserId = req.user.sub;
 
   const relatedItem = pbcItems.find((item) => item.id === file.pbcItemId);
-  if (relatedItem && parseResult.data.decision === 'rejected') {
-    relatedItem.status = 'Pending';
+  if (relatedItem) {
+    const itemReviewStatus = getItemReviewStatus(relatedItem.id);
+
+    if (itemReviewStatus === 'accepted') {
+      relatedItem.status = 'Completed';
+      relatedItem.activityDate = reviewedAt;
+    } else if (itemReviewStatus === 'rejected') {
+      relatedItem.status = 'Pending';
+    } else if (relatedItem.status === 'Pending') {
+      relatedItem.status = 'In progress';
+    }
+
     relatedItem.updatedAt = reviewedAt;
   }
 

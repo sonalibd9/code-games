@@ -80,6 +80,7 @@ export interface PbcItemFile {
   uploadedByUserId: string;
   downloadUrl: string;
   reviewStatus: 'pending-review' | 'accepted' | 'rejected';
+  reviewComment?: string;
   reviewedAt?: string;
   reviewedByUserId?: string;
 }
@@ -107,6 +108,7 @@ export interface Notification {
   requirementTitle?: string;
   pbcListId?: string;
   pbcItemId?: string;
+  itemDueDate?: string;
   itemRequestId?: string;
   itemDescription?: string;
   target: NotificationTarget;

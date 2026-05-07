@@ -6,25 +6,48 @@ function normalizeHeaderKey(key: string): string {
   return key.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
-function isLikelyDateValue(value: string): boolean {
+function parseDateLikeValue(value: string): string {
   const trimmed = value.trim();
   if (!trimmed) {
-    return false;
+    return '';
   }
 
   if (/^\d{5}(\.\d+)?$/.test(trimmed)) {
-    return true;
+    const parsed = XLSX.SSF.parse_date_code(Number(trimmed));
+    if (parsed) {
+      const month = String(parsed.m).padStart(2, '0');
+      const day = String(parsed.d).padStart(2, '0');
+      return `${parsed.y}-${month}-${day}`;
+    }
+    return '';
   }
 
-  if (/^\d{4}[-/]\d{1,2}[-/]\d{1,2}$/.test(trimmed)) {
-    return true;
+  const isoMatch = trimmed.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:\b|T|\s)/);
+  if (isoMatch) {
+    return `${isoMatch[1]}-${isoMatch[2].padStart(2, '0')}-${isoMatch[3].padStart(2, '0')}`;
   }
 
-  if (/^\d{1,2}[-/]\d{1,2}[-/]\d{2,4}$/.test(trimmed)) {
-    return true;
+  const slashMatch = trimmed.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})$/);
+  if (slashMatch) {
+    const year = slashMatch[3].length === 2 ? `20${slashMatch[3]}` : slashMatch[3];
+    return `${year}-${slashMatch[1].padStart(2, '0')}-${slashMatch[2].padStart(2, '0')}`;
   }
 
-  return !Number.isNaN(Date.parse(trimmed));
+  if (/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)/i.test(trimmed)) {
+    const parsed = new Date(trimmed);
+    if (!Number.isNaN(parsed.getTime())) {
+      const year = parsed.getFullYear();
+      const month = String(parsed.getMonth() + 1).padStart(2, '0');
+      const day = String(parsed.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    }
+  }
+
+  return '';
+}
+
+function isLikelyDateValue(value: string): boolean {
+  return parseDateLikeValue(value) !== '';
 }
 
 function readCellValue(row: Record<string, unknown>, candidates: string[]): string {
@@ -48,6 +71,16 @@ function readCellValue(row: Record<string, unknown>, candidates: string[]): stri
   return '';
 }
 
+function hasCellHeader(row: Record<string, unknown>, candidates: string[]): boolean {
+  const rowKeys = Object.keys(row);
+  const normalizedRowKeys = rowKeys.map((key) => ({ normalized: normalizeHeaderKey(key) }));
+
+  return candidates.some((key) => {
+    const target = normalizeHeaderKey(key);
+    return normalizedRowKeys.some((column) => column.normalized === target || column.normalized.includes(target) || target.includes(column.normalized));
+  });
+}
+
 function readCellValueByPosition(row: Record<string, unknown>, position: number): string {
   const values = Object.values(row).map((value) => (value === null || value === undefined ? '' : String(value).trim()));
   return values[position] ?? '';
@@ -60,25 +93,7 @@ function readLikelyDateFromRow(row: Record<string, unknown>): string {
 }
 
 function normalizeDueDate(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return '';
-  }
-
-  if (/^\d+$/.test(trimmed) && Number(trimmed) < 10000) {
-    return '';
-  }
-
-  if (/^\d{5}(\.\d+)?$/.test(trimmed)) {
-    const parsed = XLSX.SSF.parse_date_code(Number(trimmed));
-    if (parsed) {
-      const month = String(parsed.m).padStart(2, '0');
-      const day = String(parsed.d).padStart(2, '0');
-      return `${parsed.y}-${month}-${day}`;
-    }
-  }
-
-  return trimmed;
+  return parseDateLikeValue(value);
 }
 
 function isRowEmpty(values: string[]): boolean {
@@ -231,12 +246,14 @@ export function parsePbcItemsFromFile(filePath: string, pbcListId: string, clien
       'Current Status',
       'Progress',
     ]);
-    const remarksFromHeader = readCellValue(row, [
+    const remarksHeaderCandidates = [
       'Remarks',
       'Comment',
       'Notes',
       'Auditor Remarks',
-    ]);
+    ];
+    const remarksFromHeader = readCellValue(row, remarksHeaderCandidates);
+    const hasRemarksHeader = hasCellHeader(row, remarksHeaderCandidates);
 
     const requestId = requestIdFromHeader || readCellValueByPosition(row, 0) || `PBC-${index + 1}`;
     const description = descriptionFromHeader || readCellValueByPosition(row, 1);
@@ -259,7 +276,7 @@ export function parsePbcItemsFromFile(filePath: string, pbcListId: string, clien
     const rawStatus = statusFromHeader || readCellValueByPosition(row, 4);
     const status = normalizeStatus(rawStatus);
     const inferredPriority = inferPriorityFromRiskAssertion(riskAssertionFromHeader);
-    const remarks = remarksFromHeader || readCellValueByPosition(row, 5);
+    const remarks = hasRemarksHeader ? remarksFromHeader : readCellValueByPosition(row, 5);
 
     if (isRowEmpty([requestId, description, owner, dueDate, status, remarks])) {
       continue;

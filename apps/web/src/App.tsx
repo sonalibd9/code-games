@@ -4,6 +4,7 @@ import {
   deletePbcList,
   deletePbcItemFile,
   downloadPbcTemplate,
+  downloadAllPbcItemFilesZip,
   downloadUpdatedPbcItemsExcel,
   deleteSubmission,
   fetchClients,
@@ -18,6 +19,7 @@ import {
   savePbcItems,
   resolveApiUrl,
   reviewPbcItemFile,
+  updatePbcItemRemarks,
   updatePbcItemStatus,
   uploadPbcItemFile,
   uploadPbcList,
@@ -159,6 +161,37 @@ function calcPendingDays(dueDate: string, referenceDate?: string): number | null
   return Math.round((due.getTime() - baseDate.getTime()) / (1000 * 60 * 60 * 24));
 }
 
+function getPbcDaysLabel(item: PbcItem): { className: string; label: string } {
+  const activityReference = normalizeDateForInput(item.activityDate);
+  const days = calcPendingDays(normalizeDateForInput(item.dueDate), activityReference || undefined);
+
+  if (days === null) {
+    return { className: 'pending-days-na', label: '-' };
+  }
+
+  if (activityReference) {
+    if (days < 0) {
+      return { className: 'pending-days-overdue', label: `${Math.abs(days)}d late` };
+    }
+
+    if (days === 0) {
+      return { className: 'pending-days-done', label: 'On time' };
+    }
+
+    return { className: 'pending-days-ok', label: `${days}d early` };
+  }
+
+  if (days < 0) {
+    return { className: 'pending-days-overdue', label: `${Math.abs(days)}d overdue` };
+  }
+
+  if (days === 0) {
+    return { className: 'pending-days-today', label: 'Due today' };
+  }
+
+  return { className: days <= 7 ? 'pending-days-urgent' : 'pending-days-ok', label: `${days}d pending` };
+}
+
 function normalizeDateForInput(value: string): string {
   const trimmed = (value ?? '').trim();
   if (!trimmed) {
@@ -177,15 +210,17 @@ function normalizeDateForInput(value: string): string {
     return `${slashMatch[3]}-${month}-${day}`;
   }
 
-  const parsed = new Date(trimmed);
-  if (Number.isNaN(parsed.getTime())) {
-    return '';
+  if (/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)/i.test(trimmed)) {
+    const parsed = new Date(trimmed);
+    if (!Number.isNaN(parsed.getTime())) {
+      const year = parsed.getFullYear();
+      const month = String(parsed.getMonth() + 1).padStart(2, '0');
+      const day = String(parsed.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    }
   }
 
-  const year = parsed.getFullYear();
-  const month = String(parsed.getMonth() + 1).padStart(2, '0');
-  const day = String(parsed.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  return '';
 }
 
 function inferPriorityFromRiskAssertion(value: string): string {
@@ -443,20 +478,409 @@ type MetricTone = 'neutral' | 'info' | 'success' | 'warning' | 'danger';
 
 type SupportChatRole = 'assistant' | 'user';
 
+type SupportChatActionId =
+  | 'ask-follow-up'
+  | 'clear-chat'
+  | 'open-audit-desk'
+  | 'open-client-pbc-items'
+  | 'open-document-scanner'
+  | 'open-faq'
+  | 'open-first-overdue'
+  | 'open-first-pending-review'
+  | 'open-first-rejected'
+  | 'open-latest-notification'
+  | 'open-notifications'
+  | 'open-pbc-workspace'
+  | 'open-requirements'
+  | 'open-trial-balance';
+
+interface SupportChatAction {
+  id: SupportChatActionId;
+  label: string;
+  prompt?: string;
+  targetId?: string;
+}
+
 interface SupportChatMessage {
   id: string;
   role: SupportChatRole;
   content: string;
+  createdAt: string;
   isTyping?: boolean;
+  actions?: SupportChatAction[];
 }
 
 const SUPPORT_QUICK_PROMPTS = [
-  'How do I upload a PBC file?',
-  'Where do I review client documents?',
-  'What are the demo credentials?',
+  { label: 'Status brief', prompt: 'What needs attention right now?' },
+  { label: 'Upload help', prompt: 'How do I upload a PBC file?' },
+  { label: 'Review docs', prompt: 'Where do I review client documents?' },
+  { label: 'Due dates', prompt: 'Which items are overdue or due soon?' },
+  { label: 'Credentials', prompt: 'What are the demo credentials?' },
 ];
 
 const AURI_EMOJI = '🧭';
+
+interface SupportChatContext {
+  isSignedIn: boolean;
+  role?: AuthUser['role'];
+  currentPage: PageState;
+  activeClientName: string;
+  notificationCount: number;
+  latestNotificationSummary: string;
+  pbcListCount: number;
+  totalPbcItems: number;
+  completedPbcItems: number;
+  openPbcItems: number;
+  overduePbcItems: PbcItem[];
+  dueSoonPbcItems: PbcItem[];
+  pendingReviewItems: PbcItem[];
+  rejectedItems: PbcItem[];
+  openRequirements: Requirement[];
+  overdueRequirements: Requirement[];
+  clientTrialBalanceCount: number;
+  selectedPbcListName?: string;
+}
+
+interface SupportChatReply {
+  content: string;
+  actions?: SupportChatAction[];
+}
+
+const SUPPORT_CHAT_STORAGE_KEY = 'auriSupportChatMessages';
+
+function createSupportWelcomeMessage(): SupportChatMessage {
+  return {
+    id: 'support-welcome',
+    role: 'assistant',
+    content: `Hi, I am ${AURI_EMOJI} Auri. I can help with logins, uploads, PBC lists, document review, trial balance, notifications, and workspace status.`,
+    createdAt: new Date().toISOString(),
+    actions: [
+      { id: 'ask-follow-up', label: 'Status brief', prompt: 'What needs attention right now?' },
+      { id: 'ask-follow-up', label: 'Upload help', prompt: 'How do I upload a PBC file?' },
+    ],
+  };
+}
+
+function normalizeSupportChatActions(value: unknown): SupportChatAction[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const actions = value.reduce<SupportChatAction[]>((acc, action) => {
+    if (!action || typeof action !== 'object') {
+      return acc;
+    }
+
+    const candidate = action as Partial<SupportChatAction>;
+    if (typeof candidate.id === 'string' && typeof candidate.label === 'string') {
+      acc.push({
+        id: candidate.id as SupportChatActionId,
+        label: candidate.label,
+        prompt: typeof candidate.prompt === 'string' ? candidate.prompt : undefined,
+        targetId: typeof candidate.targetId === 'string' ? candidate.targetId : undefined,
+      });
+    }
+
+    return acc;
+  }, []);
+
+  return actions.length > 0 ? actions.slice(0, 4) : undefined;
+}
+
+function loadSavedSupportChatMessages(): SupportChatMessage[] {
+  if (typeof window === 'undefined') {
+    return [];
+  }
+
+  try {
+    const raw = window.localStorage.getItem(SUPPORT_CHAT_STORAGE_KEY);
+    if (!raw) {
+      return [];
+    }
+
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed.reduce<SupportChatMessage[]>((acc, item) => {
+      if (!item || typeof item !== 'object') {
+        return acc;
+      }
+
+      const candidate = item as Partial<SupportChatMessage>;
+      if (
+        typeof candidate.id === 'string' &&
+        (candidate.role === 'assistant' || candidate.role === 'user') &&
+        typeof candidate.content === 'string'
+      ) {
+        acc.push({
+          id: candidate.id,
+          role: candidate.role,
+          content: candidate.content,
+          createdAt: typeof candidate.createdAt === 'string' ? candidate.createdAt : new Date().toISOString(),
+          actions: normalizeSupportChatActions(candidate.actions),
+        });
+      }
+
+      return acc;
+    }, []).slice(-40);
+  } catch {
+    return [];
+  }
+}
+
+function getInitialSupportChatMessages(): SupportChatMessage[] {
+  const savedMessages = loadSavedSupportChatMessages();
+  return savedMessages.length > 0 ? savedMessages : [createSupportWelcomeMessage()];
+}
+
+function formatSupportChatTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+
+  return date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+}
+
+function includesAny(text: string, terms: string[]): boolean {
+  return terms.some((term) => text.includes(term));
+}
+
+function pluralize(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function itemShortLabel(item: PbcItem): string {
+  return `${item.requestId}: ${item.description}`;
+}
+
+function getPbcItemIdentityKey(item: Pick<PbcItem, 'clientId' | 'pbcListId' | 'requestId' | 'description' | 'owner' | 'riskAssertion'>): string {
+  return [item.clientId, item.pbcListId, item.requestId, item.description, item.owner, item.riskAssertion]
+    .map((value) => (value ?? '').trim().toLowerCase())
+    .join('|');
+}
+
+function findPbcItemByItemIdentity(item: PbcItem, candidates: PbcItem[]): PbcItem | undefined {
+  const identityKey = getPbcItemIdentityKey(item);
+  const identityMatches = candidates.filter((candidate) => getPbcItemIdentityKey(candidate) === identityKey);
+  if (identityMatches.length === 1) {
+    return identityMatches[0];
+  }
+
+  const idMatches = candidates.filter((candidate) => candidate.id === item.id);
+  return idMatches.length === 1 ? idMatches[0] : undefined;
+}
+
+function buildDefaultSupportActions(context: SupportChatContext): SupportChatAction[] {
+  if (!context.isSignedIn) {
+    return [
+      { id: 'ask-follow-up', label: 'Demo credentials', prompt: 'What are the demo credentials?' },
+      { id: 'open-faq', label: 'Open FAQ' },
+    ];
+  }
+
+  const actions: SupportChatAction[] = [
+    { id: 'ask-follow-up', label: 'Status brief', prompt: 'What needs attention right now?' },
+    { id: context.role === 'auditor' ? 'open-pbc-workspace' : 'open-client-pbc-items', label: 'Open PBC' },
+  ];
+
+  if (context.notificationCount > 0) {
+    actions.push({ id: 'open-notifications', label: 'Notifications' });
+  }
+
+  actions.push({ id: 'open-faq', label: 'FAQ' });
+  return actions.slice(0, 4);
+}
+
+function getSupportChatReply(prompt: string, context: SupportChatContext): SupportChatReply {
+  const text = prompt.toLowerCase();
+  const roleLabel = context.role === 'auditor' ? 'auditor' : 'client';
+
+  if (includesAny(text, ['clear', 'reset chat', 'start over'])) {
+    return {
+      content: 'I can reset this chat and keep the portal exactly where it is.',
+      actions: [{ id: 'clear-chat', label: 'Clear chat' }],
+    };
+  }
+
+  if (includesAny(text, ['credential', 'login', 'password', 'sign in', 'signin'])) {
+    return {
+      content: 'Use the auditor or client demo dropdown on the login card. Each selection fills the matching email and password automatically. Auditor demo accounts open review and PBC management tools; client demo accounts open upload and item response tools.',
+      actions: [
+        { id: 'ask-follow-up', label: 'Upload help', prompt: 'How do I upload a PBC file?' },
+        { id: 'open-faq', label: 'Open FAQ' },
+      ],
+    };
+  }
+
+  if (!context.isSignedIn) {
+    return {
+      content: 'Sign in first and I can use the live portal context. Before login, I can still help with demo credentials, access requests, FAQs, and where each workflow lives.',
+      actions: buildDefaultSupportActions(context),
+    };
+  }
+
+  if (includesAny(text, ['status', 'summary', 'attention', 'priority', 'what do i do', 'what needs', 'health', 'dashboard', 'brief'])) {
+    const focus = context.pendingReviewItems[0]
+      ? `Start with pending review item ${itemShortLabel(context.pendingReviewItems[0])}.`
+      : context.rejectedItems[0]
+        ? `Start with rejected item ${itemShortLabel(context.rejectedItems[0])}.`
+        : context.overduePbcItems[0]
+          ? `Start with overdue item ${itemShortLabel(context.overduePbcItems[0])}.`
+          : context.overdueRequirements[0]
+            ? `Start with overdue requirement ${context.overdueRequirements[0].title}.`
+            : 'Nothing urgent is standing out from the current portal data.';
+
+    const actions: SupportChatAction[] = [
+      context.pendingReviewItems[0]
+        ? { id: 'open-first-pending-review', label: 'Open pending review', targetId: context.pendingReviewItems[0].id }
+        : context.rejectedItems[0]
+          ? { id: 'open-first-rejected', label: 'Open rejected item', targetId: context.rejectedItems[0].id }
+          : context.overduePbcItems[0]
+            ? { id: 'open-first-overdue', label: 'Open overdue item', targetId: context.overduePbcItems[0].id }
+            : context.overdueRequirements[0]
+              ? { id: 'open-requirements', label: 'Open requirement', targetId: context.overdueRequirements[0].id }
+            : { id: context.role === 'auditor' ? 'open-pbc-workspace' : 'open-client-pbc-items', label: 'Open PBC' },
+    ];
+
+    if (context.role === 'auditor') {
+      actions.push({ id: 'open-audit-desk', label: 'Audit desk' });
+    }
+    if (context.notificationCount > 0) {
+      actions.push({ id: 'open-notifications', label: 'Notifications' });
+    }
+
+    return {
+      content: `You are in the ${roleLabel} workspace for ${context.activeClientName}. I see ${pluralize(context.pbcListCount, 'PBC list')}, ${pluralize(context.totalPbcItems, 'PBC item')}, ${pluralize(context.openPbcItems, 'open item')}, ${pluralize(context.overduePbcItems.length, 'overdue item')}, ${pluralize(context.dueSoonPbcItems.length, 'item')} due soon, ${pluralize(context.pendingReviewItems.length, 'pending review')}, and ${pluralize(context.rejectedItems.length, 'rejected document')}. ${focus}`,
+      actions: actions.slice(0, 4),
+    };
+  }
+
+  if (includesAny(text, ['overdue', 'due soon', 'due date', 'deadline', 'late'])) {
+    const nextDue = context.dueSoonPbcItems[0];
+    const overdueItem = context.overduePbcItems[0];
+    const overdueRequirement = context.overdueRequirements[0];
+    const detail = overdueItem
+      ? `Most urgent PBC item: ${itemShortLabel(overdueItem)}.`
+      : overdueRequirement
+        ? `Most urgent requirement: ${overdueRequirement.title}.`
+        : nextDue
+          ? `Next due PBC item: ${itemShortLabel(nextDue)}.`
+          : 'No overdue or near-due item is visible in the current workspace.';
+
+    return {
+      content: `PBC due dates are tracked from each item's Due Date column. Current view: ${pluralize(context.overduePbcItems.length, 'overdue PBC item')}, ${pluralize(context.overdueRequirements.length, 'overdue requirement')}, and ${pluralize(context.dueSoonPbcItems.length, 'PBC item')} due within seven days. ${detail}`,
+      actions: [
+        overdueItem
+          ? { id: 'open-first-overdue', label: 'Open overdue item', targetId: overdueItem.id }
+          : overdueRequirement
+            ? { id: 'open-requirements', label: 'Open requirement', targetId: overdueRequirement.id }
+            : { id: context.role === 'auditor' ? 'open-pbc-workspace' : 'open-client-pbc-items', label: 'Open PBC' },
+        { id: 'ask-follow-up', label: 'Status brief', prompt: 'What needs attention right now?' },
+      ],
+    };
+  }
+
+  if (includesAny(text, ['reject', 'rejected', 'correction', 'corrected', 'resubmit'])) {
+    const firstRejected = context.rejectedItems[0];
+    return {
+      content: firstRejected
+        ? `There are ${pluralize(context.rejectedItems.length, 'rejected document')} in the current workspace. Open ${firstRejected.requestId}, read the auditor remarks, upload the corrected file, and keep the item status current.`
+        : 'I do not see any rejected documents in the current workspace. If a document is rejected later, open the item detail page, read the remarks, and upload the corrected support there.',
+      actions: firstRejected
+        ? [{ id: 'open-first-rejected', label: `Open ${firstRejected.requestId}`, targetId: firstRejected.id }]
+        : buildDefaultSupportActions(context),
+    };
+  }
+
+  if (includesAny(text, ['review', 'document', 'accept', 'approve document', 'pending review'])) {
+    const firstPending = context.pendingReviewItems[0];
+    return {
+      content: firstPending
+        ? `There are ${pluralize(context.pendingReviewItems.length, 'document')} waiting for review. Open ${firstPending.requestId}, download the uploaded file, then mark it accepted or rejected from the item detail page.`
+        : 'Document review happens from a PBC item detail page. Auditors can download client files and mark each one accepted or rejected; clients can see rejection status and upload corrected files.',
+      actions: firstPending
+        ? [{ id: 'open-first-pending-review', label: `Open ${firstPending.requestId}`, targetId: firstPending.id }]
+        : [{ id: context.role === 'auditor' ? 'open-pbc-workspace' : 'open-client-pbc-items', label: 'Open PBC' }],
+    };
+  }
+
+  if (includesAny(text, ['auto', 'generate', 'trial balance', 'tb'])) {
+    return {
+      content: context.role === 'auditor'
+        ? 'For auto PBC, open the selected client workspace, review the uploaded trial balance, generate the PBC list, then approve it for client access when the draft is ready. Clients cannot see auto-generated lists until approval.'
+        : `Trial balance uploads sit with the client requirement workflow. I see ${pluralize(context.clientTrialBalanceCount, 'trial balance submission')} for this client workspace.`,
+      actions: [
+        { id: 'open-trial-balance', label: context.role === 'auditor' ? 'View trial balance' : 'Open portal' },
+        { id: context.role === 'auditor' ? 'open-pbc-workspace' : 'open-requirements', label: context.role === 'auditor' ? 'Open PBC workspace' : 'Open requirements' },
+      ],
+    };
+  }
+
+  if (includesAny(text, ['upload', 'pbc', 'excel', 'csv', 'file', 'support'])) {
+    return {
+      content: context.role === 'auditor'
+        ? 'Auditors can open a client workspace, upload a detailed PBC Excel or CSV, download a template, or generate an auto PBC list from trial balance data. Auto-generated lists must be approved before clients can respond.'
+        : 'Clients can open an available PBC list, choose the requested item, and upload supporting documents from the item detail page. Use filenames that clearly match the request ID, account caption, or document description.',
+      actions: [
+        { id: context.role === 'auditor' ? 'open-pbc-workspace' : 'open-client-pbc-items', label: context.role === 'auditor' ? 'Open PBC workspace' : 'View PBC items' },
+        { id: 'ask-follow-up', label: 'Filename tips', prompt: 'How should I name evidence files?' },
+      ],
+    };
+  }
+
+  if (includesAny(text, ['download', 'export', 'template'])) {
+    return {
+      content: 'Auditors can download the PBC template, export edited PBC items, or download all PBC items from the PBC workspace. Clients download or upload evidence from the relevant item or requirement area.',
+      actions: [{ id: context.role === 'auditor' ? 'open-pbc-workspace' : 'open-client-pbc-items', label: 'Open PBC' }],
+    };
+  }
+
+  if (includesAny(text, ['notification', 'bell', 'alert'])) {
+    return {
+      content: context.notificationCount > 0
+        ? `There are ${pluralize(context.notificationCount, 'notification')} available. ${context.latestNotificationSummary || 'Open the bell menu to review the latest activity.'}`
+        : 'I do not see active notifications for this workspace right now. New upload and review events appear in the bell menu.',
+      actions: context.notificationCount > 0
+        ? [
+            { id: 'open-notifications', label: 'Open notifications' },
+            context.role === 'auditor' ? { id: 'open-latest-notification', label: 'Latest upload' } : { id: 'open-requirements', label: 'Open portal' },
+          ]
+        : [{ id: 'open-requirements', label: 'Open portal' }],
+    };
+  }
+
+  if (includesAny(text, ['filename', 'file name', 'quality', 'evidence', 'match'])) {
+    return {
+      content: 'Good evidence files should include the request ID or account caption, the period, and a short document name. For example: PBC-012_bank-confirmation_FY2025.pdf. Clear names reduce review time and avoid unnecessary rejection.',
+      actions: [{ id: 'ask-follow-up', label: 'Review workflow', prompt: 'Where do I review client documents?' }],
+    };
+  }
+
+  if (includesAny(text, ['scanner', 'scan', 'ocr', 'extract'])) {
+    return {
+      content: 'The AI document scanner helps read uploaded or local document images and extract key fields for review. It is useful for quick checks before formal audit review.',
+      actions: [{ id: 'open-document-scanner', label: 'Open scanner' }],
+    };
+  }
+
+  if (includesAny(text, ['faq', 'help', 'video', 'question'])) {
+    return {
+      content: 'The FAQ panel covers role access, upload locations, auditor-only tools, Auri help, and what to do when documents are rejected.',
+      actions: [
+        { id: 'open-faq', label: 'Open FAQ' },
+        { id: 'ask-follow-up', label: 'Status brief', prompt: 'What needs attention right now?' },
+      ],
+    };
+  }
+
+  return {
+    content: `I can help with the ${roleLabel} workspace for ${context.activeClientName}. Ask me about current status, overdue items, uploads, document review, trial balance, notifications, exports, scanner support, or demo credentials.`,
+    actions: buildDefaultSupportActions(context),
+  };
+}
 
 const AUDITOR_INSIGHTS = [
   {
@@ -530,32 +954,6 @@ const DEMO_CREDENTIALS = [
 const DEMO_AUDITOR_CREDENTIALS = DEMO_CREDENTIALS.filter((credential) => credential.variant === 'auditor');
 const DEMO_CLIENT_CREDENTIALS = DEMO_CREDENTIALS.filter((credential) => credential.variant === 'client');
 
-function getSupportChatReply(prompt: string): string {
-  const text = prompt.toLowerCase();
-
-  if (text.includes('credential') || text.includes('login') || text.includes('password')) {
-    return 'Use the auditor or client demo dropdown on the login card. Each selection fills the matching email and password automatically.';
-  }
-
-  if (text.includes('upload') && (text.includes('pbc') || text.includes('excel') || text.includes('file'))) {
-    return 'Auditors can open a client workspace, choose a PBC Excel or CSV file, and upload it from Detailed PBC Management. Clients can upload support from each PBC item detail page.';
-  }
-
-  if (text.includes('review') || text.includes('document') || text.includes('accept') || text.includes('reject')) {
-    return 'Open the PBC item detail page from the editor or notification panel. Auditors can download client files and mark each document as accepted or rejected.';
-  }
-
-  if (text.includes('trial balance')) {
-    return 'Auditors can use View Trial Balance from the client selection or PBC workspace screens to review trial balance submissions by client.';
-  }
-
-  if (text.includes('notification')) {
-    return 'Auditor notifications appear in the bell menu after clients upload requirement files or PBC item documents.';
-  }
-
-  return 'I can help with login, PBC uploads, item status, document review, trial balance submissions, and notifications. Try asking about one of those workflows.';
-}
-
 function MetricCard({
   label,
   value,
@@ -615,6 +1013,22 @@ function formatDateLabel(value?: string): string {
   });
 }
 
+function getPbcDueDateColumnSummary(items: PbcItem[]): string {
+  const dueDates = Array.from(
+    new Set(items.map((item) => normalizeDateForInput(item.dueDate)).filter(Boolean)),
+  ).sort();
+
+  if (dueDates.length === 0) {
+    return '';
+  }
+
+  if (dueDates.length === 1) {
+    return formatDateLabel(dueDates[0]);
+  }
+
+  return `Multiple dates, earliest ${formatDateLabel(dueDates[0])}`;
+}
+
 function getFinancialYearLabel(requirement?: Requirement | null): string {
   const title = requirement?.title.trim();
   if (!title) {
@@ -627,6 +1041,10 @@ function getFinancialYearLabel(requirement?: Requirement | null): string {
 
 function getFinancialYearKey(requirement?: Requirement | null): string {
   return getFinancialYearLabel(requirement).toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function isTrialBalanceRequirement(requirement?: Requirement | null): boolean {
+  return requirement?.title.toLowerCase().includes('trial balance') ?? false;
 }
 
 function RequirementStatusPill({ status }: { status: Requirement['status'] }) {
@@ -668,7 +1086,9 @@ function App() {
   const [isNotificationMenuOpen, setIsNotificationMenuOpen] = useState(false);
   const [isAuditDeskOpen, setIsAuditDeskOpen] = useState(false);
   const [isInsightsOpen, setIsInsightsOpen] = useState(false);
+  const [activeInsightIndex, setActiveInsightIndex] = useState(0);
   const [isFaqOpen, setIsFaqOpen] = useState(false);
+  const [activeFaqIndex, setActiveFaqIndex] = useState(0);
   const [isQuestionsOpen, setIsQuestionsOpen] = useState(false);
   const [isSupportChatOpen, setIsSupportChatOpen] = useState(false);
   const [scannerFile, setScannerFile] = useState<File | null>(null);
@@ -678,15 +1098,36 @@ function App() {
   const [scannerIsRunning, setScannerIsRunning] = useState(false);
   const [scannerError, setScannerError] = useState('');
   const [supportChatInput, setSupportChatInput] = useState('');
+  const [isSupportChatExpanded, setIsSupportChatExpanded] = useState(false);
+  const [supportChatCopiedMessageId, setSupportChatCopiedMessageId] = useState('');
   const typingTimerRef = useRef<number | null>(null);
+  const copiedTimerRef = useRef<number | null>(null);
   const supportChatScrollRef = useRef<HTMLDivElement | null>(null);
-  const [supportChatMessages, setSupportChatMessages] = useState<SupportChatMessage[]>(() => [
-    {
-      id: 'support-welcome',
-      role: 'assistant',
-      content: `Hi, I am ${AURI_EMOJI} Auri. I can help with logins, uploads, PBC lists, document review, trial balance, and notifications.`,
-    },
-  ]);
+  const [supportChatMessages, setSupportChatMessages] = useState<SupportChatMessage[]>(getInitialSupportChatMessages);
+
+  useEffect(() => {
+    if (!isInsightsOpen) {
+      return undefined;
+    }
+
+    const rotationTimer = window.setInterval(() => {
+      setActiveInsightIndex((currentIndex) => (currentIndex + 1) % AUDITOR_INSIGHTS.length);
+    }, 4200);
+
+    return () => window.clearInterval(rotationTimer);
+  }, [isInsightsOpen]);
+
+  useEffect(() => {
+    if (!isFaqOpen) {
+      return undefined;
+    }
+
+    const rotationTimer = window.setInterval(() => {
+      setActiveFaqIndex((currentIndex) => (currentIndex + 1) % FAQ_ITEMS.length);
+    }, 4600);
+
+    return () => window.clearInterval(rotationTimer);
+  }, [isFaqOpen]);
 
   const [pbcClientId, setPbcClientId] = useState('');
   const [pbcFile, setPbcFile] = useState<File | null>(null);
@@ -751,8 +1192,24 @@ function App() {
       if (typingTimerRef.current !== null) {
         window.clearInterval(typingTimerRef.current);
       }
+      if (copiedTimerRef.current !== null) {
+        window.clearTimeout(copiedTimerRef.current);
+      }
     };
   }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || supportChatMessages.some((message) => message.isTyping)) {
+      return;
+    }
+
+    try {
+      const savedMessages = supportChatMessages.slice(-40).map(({ isTyping, ...message }) => message);
+      window.localStorage.setItem(SUPPORT_CHAT_STORAGE_KEY, JSON.stringify(savedMessages));
+    } catch {
+      // Local storage can be disabled without affecting the chat itself.
+    }
+  }, [supportChatMessages]);
 
   useEffect(() => {
     if (!isSupportChatOpen || !supportChatScrollRef.current) {
@@ -841,10 +1298,66 @@ function App() {
     return submissions
       .filter((submission) => {
         const requirement = visibleRequirements.find((item) => item.id === submission.requirementId);
-        return requirement?.title.toLowerCase().includes('trial balance') ?? false;
+        return isTrialBalanceRequirement(requirement);
       })
       .sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime());
   }, [session, submissions, visibleRequirements]);
+
+  const clientTrialBalanceSubmissionKeys = useMemo(() => {
+    const keys = new Set<string>();
+
+    clientTrialBalanceSubmissions.forEach((submission) => {
+      keys.add(`id:${submission.requirementId}`);
+
+      const requirement = visibleRequirements.find((item) => item.id === submission.requirementId);
+      if (isTrialBalanceRequirement(requirement)) {
+        keys.add(`fy:${getFinancialYearKey(requirement)}`);
+      }
+    });
+
+    return keys;
+  }, [clientTrialBalanceSubmissions, visibleRequirements]);
+
+  const hasUploadedTrialBalanceForRequirement = (requirement: Requirement) =>
+    clientTrialBalanceSubmissionKeys.has(`id:${requirement.id}`) ||
+    clientTrialBalanceSubmissionKeys.has(`fy:${getFinancialYearKey(requirement)}`);
+
+  const selectedAuditFinalisationDate = activeAuditorClientId
+    ? (auditFinalisationDatesByClient[activeAuditorClientId] ?? auditFinalisationDate)
+    : auditFinalisationDate;
+
+  const getAuditFinalisationDateForClient = (clientId?: string) => {
+    if (!clientId) {
+      return normalizeDateForInput(selectedAuditFinalisationDate);
+    }
+
+    if (clientId === activeAuditorClientId) {
+      return normalizeDateForInput(auditFinalisationDatesByClient[clientId] ?? auditFinalisationDate);
+    }
+
+    return normalizeDateForInput(auditFinalisationDatesByClient[clientId] ?? '');
+  };
+
+  const getAuditFinalisationDueDateForClient = (clientId?: string) => {
+    const auditFinalisationBase = getAuditFinalisationDateForClient(clientId);
+    return auditFinalisationBase ? calculateDueDate(auditFinalisationBase) : '';
+  };
+
+  const getClientVisibleRequirementDueDate = (requirement: Requirement) => {
+    if (
+      session?.user.role === 'client' &&
+      isTrialBalanceRequirement(requirement) &&
+      !hasUploadedTrialBalanceForRequirement(requirement)
+    ) {
+      return '';
+    }
+
+    if (isTrialBalanceRequirement(requirement)) {
+      return getAuditFinalisationDueDateForClient(requirement.clientId);
+    }
+
+    return requirement.dueDate ?? '';
+  };
 
   const pbcStatusSummary = useMemo(() => {
     const completed = visiblePbcItems.filter((item) => item.status === 'Completed').length;
@@ -884,7 +1397,7 @@ function App() {
       if (requirement.status === 'submitted') {
         return false;
       }
-      const days = calcPendingDays(requirement.dueDate ?? '');
+      const days = calcPendingDays(getClientVisibleRequirementDueDate(requirement));
       return days !== null && days < 0;
     }).length;
 
@@ -894,7 +1407,14 @@ function App() {
       overdue,
       total: visibleRequirements.length,
     };
-  }, [visibleRequirements]);
+  }, [
+    activeAuditorClientId,
+    auditFinalisationDate,
+    auditFinalisationDatesByClient,
+    clientTrialBalanceSubmissionKeys,
+    session,
+    visibleRequirements,
+  ]);
 
   const auditDeskClient = useMemo(() => {
     if (!session || session.user.role !== 'auditor') {
@@ -931,6 +1451,67 @@ function App() {
     };
   }, [visiblePbcItems]);
 
+  const supportChatContext = useMemo<SupportChatContext>(() => {
+    const openItems = visiblePbcItems.filter((item) => item.status !== 'Completed');
+    const overduePbcItems = openItems.filter((item) => {
+      const days = calcPendingDays(normalizeDateForInput(item.dueDate));
+      return days !== null && days < 0;
+    });
+    const dueSoonPbcItems = openItems.filter((item) => {
+      const days = calcPendingDays(normalizeDateForInput(item.dueDate));
+      return days !== null && days >= 0 && days <= 7;
+    });
+    const pendingReviewItems = visiblePbcItems.filter((item) => item.documentReviewStatus === 'Pending Review');
+    const rejectedItems = visiblePbcItems.filter((item) => item.documentReviewStatus === 'Rejected');
+    const openRequirements = visibleRequirements.filter((requirement) => requirement.status === 'open');
+    const overdueRequirements = openRequirements.filter((requirement) => {
+      const days = calcPendingDays(getClientVisibleRequirementDueDate(requirement));
+      return days !== null && days < 0;
+    });
+    const activeClientName = session?.user.role === 'auditor'
+      ? clients.find((client) => client.id === activeAuditorClientId)?.name ?? (activeAuditorClientId || 'all clients')
+      : 'your client workspace';
+    const clientNotificationCount = overdueRequirements.length + overduePbcItems.length + dueSoonPbcItems.length + rejectedItems.length;
+
+    return {
+      isSignedIn: Boolean(session),
+      role: session?.user.role,
+      currentPage,
+      activeClientName,
+      notificationCount: session?.user.role === 'auditor' ? auditorNotifications.length : clientNotificationCount,
+      latestNotificationSummary: session?.user.role === 'auditor'
+        ? auditorNotifications[0]?.message ?? ''
+        : rejectedItems[0]?.remarks || overduePbcItems[0]?.description || overdueRequirements[0]?.description || '',
+      pbcListCount: visiblePbcLists.length,
+      totalPbcItems: visiblePbcItems.length,
+      completedPbcItems: pbcStatusSummary.completed,
+      openPbcItems: openItems.length,
+      overduePbcItems,
+      dueSoonPbcItems,
+      pendingReviewItems,
+      rejectedItems,
+      openRequirements,
+      overdueRequirements,
+      clientTrialBalanceCount: clientTrialBalanceSubmissions.length,
+      selectedPbcListName: selectedPbcList?.originalName,
+    };
+  }, [
+    activeAuditorClientId,
+    auditFinalisationDate,
+    auditFinalisationDatesByClient,
+    auditorNotifications,
+    clientTrialBalanceSubmissionKeys,
+    clientTrialBalanceSubmissions.length,
+    clients,
+    currentPage,
+    pbcStatusSummary.completed,
+    selectedPbcList,
+    session,
+    visiblePbcItems,
+    visiblePbcLists.length,
+    visibleRequirements,
+  ]);
+
   const auditDeskRecentActivity = useMemo(() => {
     const notificationActivity = auditorNotifications.slice(0, 4).map((notification) => ({
       id: `notification-${notification.id}`,
@@ -956,46 +1537,8 @@ function App() {
 
   const getClientLabel = (clientId: string) => clients.find((client) => client.id === clientId)?.name ?? clientId;
 
-  const selectedAuditFinalisationDate = activeAuditorClientId
-    ? (auditFinalisationDatesByClient[activeAuditorClientId] ?? '')
-    : auditFinalisationDate;
-
-  const getClientRequirementDueDate = (clientId?: string) => {
-    if (!clientId) {
-      return '';
-    }
-
-    const clientRequirements = requirements.filter((requirement) => requirement.clientId === clientId);
-    const trialBalanceRequirement = clientRequirements.find(
-      (requirement) =>
-        requirement.title.toLowerCase().includes('trial balance') &&
-        normalizeDateForInput(requirement.dueDate ?? ''),
-    );
-    const fallbackRequirement = clientRequirements.find((requirement) => normalizeDateForInput(requirement.dueDate ?? ''));
-
-    return normalizeDateForInput((trialBalanceRequirement ?? fallbackRequirement)?.dueDate ?? '');
-  };
-
-  const getPbcRequestedDateBaseForClient = (clientId?: string) => {
-    if (!clientId) {
-      return selectedAuditFinalisationDate;
-    }
-
-    return getClientRequirementDueDate(clientId) || auditFinalisationDatesByClient[clientId] || '';
-  };
-
-  const getPbcDueDateForClient = (clientId: string | undefined, requestedDate: string) => {
-    const effectiveRequestedDate = normalizeDateForInput(requestedDate) || getPbcRequestedDateBaseForClient(clientId);
-    return effectiveRequestedDate ? calculateDueDate(effectiveRequestedDate) : '';
-  };
-
-  const selectedClientRequirementDueDate = getClientRequirementDueDate(activeAuditorClientId);
-  const selectedPbcDueDateBase = getPbcRequestedDateBaseForClient(activeAuditorClientId);
-  const selectedPbcDueDateBaseLabel = selectedClientRequirementDueDate ? 'Requested Date Base (Requirement)' : 'Requested Date Base (Audit Finalisation)';
-  const selectedEditorClientId = selectedPbcList?.clientId || activeAuditorClientId;
-  const selectedEditorDueDateBase = selectedPbcList?.clientId
-    ? getPbcRequestedDateBaseForClient(selectedPbcList.clientId)
-    : selectedPbcDueDateBase;
+  const selectedPbcDueDateColumnLabel = getPbcDueDateColumnSummary(visiblePbcItems);
+  const selectedEditorDueDateColumnLabel = getPbcDueDateColumnSummary(pbcEditorRows);
 
   const hasPreviousPage = pageHistory.length > 0;
 
@@ -1023,6 +1566,18 @@ function App() {
     return { label: 'Requirement', badge: 'REQ' };
   };
 
+  const getNotificationPbcItemDueDate = (notification: Notification) => {
+    if (notification.target.page !== 'pbc-item-detail') {
+      return '';
+    }
+
+    const itemDueDate = notification.itemDueDate
+      || pbcAllItems.find((item) => item.id === notification.target.pbcItemId)?.dueDate
+      || '';
+
+    return normalizeDateForInput(itemDueDate);
+  };
+
   const getNotificationSummary = (notification: Notification) => {
     const clientName = getClientLabel(notification.clientId);
 
@@ -1031,9 +1586,11 @@ function App() {
     }
 
     if (notification.target.page === 'pbc-item-detail') {
+      const dueDate = getNotificationPbcItemDueDate(notification);
+      const dueDateText = dueDate ? ` Due ${formatDateLabel(dueDate)}.` : '';
       return notification.itemRequestId
-        ? `Uploaded supporting document for ${notification.itemRequestId}.`
-        : 'Uploaded supporting document for review.';
+        ? `Uploaded supporting document for ${notification.itemRequestId}.${dueDateText}`
+        : `Uploaded supporting document for review.${dueDateText}`;
     }
 
     return notification.requirementTitle
@@ -1279,18 +1836,16 @@ function App() {
     };
   }, [session]);
 
-  async function loadPbcEditorData(token: string, pbcListId: string, clientIdOverride?: string) {
+  async function loadPbcEditorData(token: string, pbcListId: string) {
     const rows = await fetchPbcItems(token, pbcListId);
-    const listClientId = clientIdOverride ?? pbcLists.find((list) => list.id === pbcListId)?.clientId ?? activeAuditorClientId;
     const filled = rows.map((row) => {
       const normalizedDueDate = normalizeDateForInput(row.dueDate);
       const inferredPriority = inferPriorityFromRiskAssertion(row.riskAssertion);
       const finalPriority = row.priority || inferredPriority;
-      const calculatedDueDate = listClientId ? getPbcDueDateForClient(listClientId, row.requestedDate) : normalizedDueDate;
       return {
         ...row,
         priority: finalPriority,
-        dueDate: calculatedDueDate,
+        dueDate: normalizedDueDate,
       };
     });
     setPbcEditorRows(filled);
@@ -1302,46 +1857,8 @@ function App() {
     }
 
     setError('');
-
-    try {
-      const requestedDateBase = getPbcRequestedDateBaseForClient(activeAuditorClientId);
-      if (requestedDateBase) {
-        const clientListIds = pbcLists
-          .filter((list) => list.clientId === activeAuditorClientId)
-          .map((list) => list.id);
-
-        const itemsNeedingDueDateSync = pbcAllItems.filter(
-          (item) =>
-            clientListIds.includes(item.pbcListId) &&
-            normalizeDateForInput(item.dueDate) !== getPbcDueDateForClient(activeAuditorClientId, item.requestedDate),
-        );
-
-        if (itemsNeedingDueDateSync.length > 0) {
-          await savePbcItems(
-            session.token,
-            itemsNeedingDueDateSync.map((row) => ({
-              id: row.id,
-              requestId: row.requestId,
-              description: row.description,
-              priority: row.priority,
-              riskAssertion: row.riskAssertion,
-              owner: row.owner,
-              requestedDate: row.requestedDate,
-              dueDate: getPbcDueDateForClient(activeAuditorClientId, row.requestedDate),
-              status: row.status,
-              remarks: row.remarks,
-            })),
-          );
-
-          await loadPortalData(session.token, session.user.role);
-        }
-      }
-
-      setPbcWorkspaceReturnPage('auditor-client-select');
-      setCurrentPage('auditor-pbc');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not apply the requested date + 3 months due-date rule to PBC items.');
-    }
+    setPbcWorkspaceReturnPage('auditor-client-select');
+    setCurrentPage('auditor-pbc');
   }
 
   async function handleLogin(event: FormEvent) {
@@ -1449,42 +1966,11 @@ function App() {
     try {
       const uploaded = await uploadPbcList(session.token, targetClientId, pbcFile);
 
-      let syncedCount = 0;
-      const requestedDateBase = getPbcRequestedDateBaseForClient(targetClientId);
-      const dueDateSourceLabel = getClientRequirementDueDate(targetClientId) ? 'requested date base from client requirement due date' : 'requested date base from audit finalisation fallback date';
-      if (requestedDateBase) {
-        const uploadedListItems = await fetchPbcItems(session.token, uploaded.id);
-        const itemsNeedingDueDateSync = uploadedListItems.filter(
-          (item) => normalizeDateForInput(item.dueDate) !== getPbcDueDateForClient(targetClientId, item.requestedDate),
-        );
-
-        if (itemsNeedingDueDateSync.length > 0) {
-          await savePbcItems(
-            session.token,
-            itemsNeedingDueDateSync.map((row) => ({
-              id: row.id,
-              requestId: row.requestId,
-              description: row.description,
-              priority: row.priority,
-              riskAssertion: row.riskAssertion,
-              owner: row.owner,
-              requestedDate: row.requestedDate,
-              dueDate: getPbcDueDateForClient(targetClientId, row.requestedDate),
-              status: row.status,
-              remarks: row.remarks,
-            })),
-          );
-          syncedCount = itemsNeedingDueDateSync.length;
-        }
-      }
-
       await loadPortalData(session.token, session.user.role);
       setSelectedPbcListId(uploaded.id);
       setPbcFile(null);
       setSuccessMessage(
-        `Detailed PBC list uploaded successfully. Parsed ${uploaded.parsedItemCount ?? 0} rows.${
-          syncedCount > 0 ? ` Calculated due date from the ${dueDateSourceLabel} for ${syncedCount} item(s).` : ''
-        }`,
+        `Detailed PBC list uploaded successfully. Parsed ${uploaded.parsedItemCount ?? 0} rows. Due dates now use the Due Date column from the PBC list.`,
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not upload the detailed PBC list.');
@@ -1502,39 +1988,10 @@ function App() {
 
     try {
       const generated = await generateAutoPbcList(session.token, activeAuditorClientId);
-      let syncedCount = 0;
-      const requestedDateBase = getPbcRequestedDateBaseForClient(activeAuditorClientId);
-      const dueDateSourceLabel = getClientRequirementDueDate(activeAuditorClientId) ? 'requested date base from client requirement due date' : 'requested date base from audit finalisation fallback date';
-
-      if (requestedDateBase) {
-        const generatedItems = await fetchPbcItems(session.token, generated.id);
-        const itemsNeedingDueDateSync = generatedItems.filter(
-          (item) => normalizeDateForInput(item.dueDate) !== getPbcDueDateForClient(activeAuditorClientId, item.requestedDate),
-        );
-
-        if (itemsNeedingDueDateSync.length > 0) {
-          await savePbcItems(
-            session.token,
-            itemsNeedingDueDateSync.map((row) => ({
-              id: row.id,
-              requestId: row.requestId,
-              description: row.description,
-              priority: row.priority,
-              riskAssertion: row.riskAssertion,
-              owner: row.owner,
-              requestedDate: row.requestedDate,
-              dueDate: getPbcDueDateForClient(activeAuditorClientId, row.requestedDate),
-              status: row.status,
-              remarks: row.remarks,
-            })),
-          );
-          syncedCount = itemsNeedingDueDateSync.length;
-        }
-      }
 
       await loadPortalData(session.token, session.user.role);
       setSelectedPbcListId(generated.id);
-      await loadPbcEditorData(session.token, generated.id, activeAuditorClientId);
+      await loadPbcEditorData(session.token, generated.id);
       setPbcEditorReturnPage('auditor-pbc');
       setCurrentPage('pbc-editor');
 
@@ -1543,7 +2000,7 @@ function App() {
       setSuccessMessage(
         `Auto PBC generated from ${generated.trialBalanceFileName ?? 'the latest trial balance'} with ${generated.parsedItemCount ?? 0} item(s) across ${matchedCount} matched subgroup(s).${
           unmatchedCount > 0 ? ` ${unmatchedCount} subgroup(s) did not match the base PBC template.` : ''
-        }${syncedCount > 0 ? ` Due dates were calculated from the ${dueDateSourceLabel} for ${syncedCount} item(s).` : ''} You can now adjust the list in PBC Editor and save changes. It remains hidden from the client until you approve it.`,
+        } Due dates can be reviewed and changed directly in the Due Date column. You can now adjust the list in PBC Editor and save changes. It remains hidden from the client until you approve it.`,
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not generate auto PBC list from trial balance.');
@@ -1627,39 +2084,11 @@ function App() {
         if (field === 'riskAssertion') {
           const inferredPriority = inferPriorityFromRiskAssertion(value);
           const nextPriority = inferredPriority || row.priority;
-          const nextDueDate = selectedEditorClientId
-            ? getPbcDueDateForClient(selectedEditorClientId, row.requestedDate)
-            : row.dueDate;
 
           return {
             ...row,
             riskAssertion: value,
             priority: nextPriority,
-            dueDate: nextDueDate,
-          };
-        }
-
-        if (field === 'priority') {
-          const nextDueDate = selectedEditorClientId
-            ? getPbcDueDateForClient(selectedEditorClientId, row.requestedDate)
-            : row.dueDate;
-
-          return {
-            ...row,
-            priority: value,
-            dueDate: nextDueDate,
-          };
-        }
-
-        if (field === 'requestedDate') {
-          const nextDueDate = selectedEditorClientId
-            ? getPbcDueDateForClient(selectedEditorClientId, value)
-            : calculateDueDate(normalizeDateForInput(value));
-
-          return {
-            ...row,
-            requestedDate: value,
-            dueDate: nextDueDate || row.dueDate,
           };
         }
 
@@ -1796,6 +2225,31 @@ function App() {
       setSuccessMessage(`Downloaded all ${pbcEditorRows.length} PBC item(s) as Excel.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not download all PBC items.');
+    }
+  }
+
+  async function handleDownloadAllPbcClientFiles() {
+    if (!session || !selectedPbcListId) {
+      return;
+    }
+
+    setError('');
+    setSuccessMessage('');
+
+    try {
+      const fileBlob = await downloadAllPbcItemFilesZip(session.token, selectedPbcListId);
+      const objectUrl = URL.createObjectURL(fileBlob);
+      const anchor = document.createElement('a');
+      anchor.href = objectUrl;
+      anchor.download = `pbc-client-files-${new Date().toISOString().slice(0, 10)}.zip`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(objectUrl);
+
+      setSuccessMessage('Downloaded all client-uploaded PBC files as a ZIP.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not download client-uploaded PBC files.');
     }
   }
 
@@ -1975,18 +2429,37 @@ function App() {
         }
       }
 
-      await uploadPbcItemFile(session.token, activePbcItem.id, itemFileInput);
-      const files = await fetchPbcItemFiles(session.token, activePbcItem.id);
-      setPbcItemFiles(files);
+      const latestListItems = await fetchPbcItems(session.token, activePbcItem.pbcListId);
+      const uploadTarget = findPbcItemByItemIdentity(activePbcItem, latestListItems);
 
-      const listItems = await fetchPbcItems(session.token, activePbcItem.pbcListId);
+      if (!uploadTarget) {
+        throw new Error('PBC item not found. Please go back to the PBC list and reopen the item.');
+      }
+
+      setActivePbcItem(uploadTarget);
       setPbcEditorRows((current) =>
-        current.map((item) => listItems.find((row) => row.id === item.id) ?? item),
+        current.map((item) => findPbcItemByItemIdentity(item, latestListItems) ?? item),
       );
       setClientItemRows((current) =>
-        current.map((item) => listItems.find((row) => row.id === item.id) ?? item),
+        current.map((item) => findPbcItemByItemIdentity(item, latestListItems) ?? item),
       );
-      const refreshedActive = listItems.find((item) => item.id === activePbcItem.id);
+
+      await uploadPbcItemFile(session.token, uploadTarget.id, itemFileInput);
+      const files = await fetchPbcItemFiles(session.token, uploadTarget.id);
+      setPbcItemFiles(files);
+
+      const [listItems, allItems] = await Promise.all([
+        fetchPbcItems(session.token, uploadTarget.pbcListId),
+        fetchPbcItems(session.token),
+      ]);
+      setPbcEditorRows((current) =>
+        current.map((item) => findPbcItemByItemIdentity(item, listItems) ?? item),
+      );
+      setClientItemRows((current) =>
+        current.map((item) => findPbcItemByItemIdentity(item, listItems) ?? item),
+      );
+      setPbcAllItems(allItems);
+      const refreshedActive = listItems.find((item) => item.id === uploadTarget.id);
       if (refreshedActive) {
         setActivePbcItem(refreshedActive);
       }
@@ -2020,7 +2493,15 @@ function App() {
     setSuccessMessage('');
 
     try {
-      await reviewPbcItemFile(session.token, fileId, decision);
+      const reviewComment = decision === 'rejected'
+        ? window.prompt('Enter the reason for rejection. The client will be able to see this comment.', '')?.trim()
+        : undefined;
+
+      if (decision === 'rejected' && reviewComment === undefined) {
+        return;
+      }
+
+      await reviewPbcItemFile(session.token, fileId, decision, reviewComment);
 
       const [files, listItems, allItems] = await Promise.all([
         fetchPbcItemFiles(session.token, activePbcItem.id),
@@ -2068,6 +2549,48 @@ function App() {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not update item status.');
     }
+  }
+
+  function updateClientItemRemarkDraft(itemId: string, remarks: string) {
+    setActivePbcItem((current) => (current?.id === itemId ? { ...current, remarks } : current));
+    setClientItemRows((current) => current.map((item) => (item.id === itemId ? { ...item, remarks } : item)));
+    setPbcAllItems((current) => current.map((item) => (item.id === itemId ? { ...item, remarks } : item)));
+  }
+
+  async function handleClientItemRemarksSave(itemId: string, remarks: string) {
+    if (!session) {
+      return;
+    }
+
+    setError('');
+
+    try {
+      const updatedItem = await updatePbcItemRemarks(session.token, itemId, remarks);
+      setActivePbcItem((current) => (current?.id === updatedItem.id ? updatedItem : current));
+      setClientItemRows((current) => current.map((item) => (item.id === updatedItem.id ? updatedItem : item)));
+      setPbcAllItems((current) => current.map((item) => (item.id === updatedItem.id ? updatedItem : item)));
+      setPbcEditorRows((current) => current.map((item) => (item.id === updatedItem.id ? updatedItem : item)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not update remarks.');
+    }
+  }
+
+  function handleItemDetailBack() {
+    setError('');
+    setSuccessMessage('');
+    setItemFileInput(null);
+
+    if (session?.user.role === 'client' && activePbcListForClient) {
+      setCurrentPage('client-pbc-items');
+      return;
+    }
+
+    if (session?.user.role === 'auditor') {
+      setCurrentPage('pbc-editor');
+      return;
+    }
+
+    handleBackNavigation();
   }
 
   function handleBackNavigation() {
@@ -2208,13 +2731,17 @@ function App() {
       id: `support-user-${timestamp}`,
       role: 'user',
       content: trimmed,
+      createdAt: new Date(timestamp).toISOString(),
     };
+    const reply = getSupportChatReply(trimmed, supportChatContext);
     const assistantMessageId = `support-assistant-${timestamp}`;
     const assistantMessage: SupportChatMessage = {
       id: assistantMessageId,
       role: 'assistant',
       content: '',
+      createdAt: new Date(timestamp + 1).toISOString(),
       isTyping: true,
+      actions: reply.actions,
     };
 
     setSupportChatMessages((current) => [...current, userMessage, assistantMessage]);
@@ -2223,7 +2750,7 @@ function App() {
       window.clearInterval(typingTimerRef.current);
     }
 
-    const fullReply = getSupportChatReply(trimmed);
+    const fullReply = reply.content;
     let index = 0;
 
     typingTimerRef.current = window.setInterval(() => {
@@ -2259,6 +2786,170 @@ function App() {
 
     setSupportChatInput('');
     addSupportChatExchange(prompt);
+  }
+
+  function resetSupportChat() {
+    if (typingTimerRef.current !== null) {
+      window.clearInterval(typingTimerRef.current);
+      typingTimerRef.current = null;
+    }
+
+    setSupportChatCopiedMessageId('');
+    setSupportChatMessages([createSupportWelcomeMessage()]);
+  }
+
+  async function copySupportChatMessage(message: SupportChatMessage) {
+    if (!message.content.trim() || typeof navigator === 'undefined' || !navigator.clipboard) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(message.content);
+      setSupportChatCopiedMessageId(message.id);
+      if (copiedTimerRef.current !== null) {
+        window.clearTimeout(copiedTimerRef.current);
+      }
+      copiedTimerRef.current = window.setTimeout(() => {
+        setSupportChatCopiedMessageId('');
+        copiedTimerRef.current = null;
+      }, 1600);
+    } catch {
+      // Clipboard permissions vary by browser and protocol.
+    }
+  }
+
+  function closeSupportChatOverlays() {
+    setIsSupportChatOpen(false);
+    setIsAuditDeskOpen(false);
+    setIsInsightsOpen(false);
+    setIsFaqOpen(false);
+    setIsQuestionsOpen(false);
+    setIsNotificationMenuOpen(false);
+  }
+
+  function handleSupportChatAction(action: SupportChatAction) {
+    if (action.prompt) {
+      addSupportChatExchange(action.prompt);
+      return;
+    }
+
+    if (action.id === 'clear-chat') {
+      resetSupportChat();
+      return;
+    }
+
+    setError('');
+    setSuccessMessage('');
+
+    if (action.id === 'open-faq') {
+      setIsSupportChatOpen(false);
+      setIsAuditDeskOpen(false);
+      setIsInsightsOpen(false);
+      setIsQuestionsOpen(false);
+      setIsNotificationMenuOpen(false);
+      setIsFaqOpen(true);
+      return;
+    }
+
+    if (action.id === 'open-notifications') {
+      setIsSupportChatOpen(false);
+      setIsAuditDeskOpen(false);
+      setIsInsightsOpen(false);
+      setIsFaqOpen(false);
+      setIsQuestionsOpen(false);
+      setIsNotificationMenuOpen(true);
+      return;
+    }
+
+    if (action.id === 'open-latest-notification') {
+      const latestNotification = action.targetId
+        ? auditorNotifications.find((notification) => notification.id === action.targetId)
+        : auditorNotifications[0];
+      if (latestNotification) {
+        setIsSupportChatOpen(false);
+        void handleNotificationNavigate(latestNotification);
+      }
+      return;
+    }
+
+    if (action.id === 'open-audit-desk') {
+      if (session?.user.role !== 'auditor') {
+        return;
+      }
+
+      setIsSupportChatOpen(false);
+      setIsInsightsOpen(false);
+      setIsFaqOpen(false);
+      setIsQuestionsOpen(false);
+      setIsNotificationMenuOpen(false);
+      setIsAuditDeskOpen(true);
+      return;
+    }
+
+    if (action.id === 'open-document-scanner') {
+      openAiDocumentScanner();
+      return;
+    }
+
+    if (action.id === 'open-trial-balance') {
+      closeSupportChatOverlays();
+      if (session?.user.role === 'auditor') {
+        openTrialBalance(currentPage);
+      } else {
+        setCurrentPage('portal');
+      }
+      return;
+    }
+
+    if (action.id === 'open-pbc-workspace') {
+      closeSupportChatOverlays();
+      if (session?.user.role === 'auditor') {
+        openPbcWorkspace(currentPage);
+      } else {
+        setCurrentPage('portal');
+      }
+      return;
+    }
+
+    if (action.id === 'open-client-pbc-items') {
+      closeSupportChatOverlays();
+      const targetList = selectedPbcList ?? visiblePbcLists[0];
+      if (session?.user.role === 'client' && targetList) {
+        void openClientPbcItems(targetList);
+      } else if (session?.user.role === 'auditor') {
+        openPbcWorkspace(currentPage);
+      } else {
+        setCurrentPage('portal');
+      }
+      return;
+    }
+
+    if (action.id === 'open-requirements') {
+      closeSupportChatOverlays();
+      if (action.targetId) {
+        setSelectedRequirementId(action.targetId);
+      }
+      setCurrentPage('portal');
+      return;
+    }
+
+    if (action.id === 'open-first-overdue' || action.id === 'open-first-pending-review' || action.id === 'open-first-rejected') {
+      const sourceItems = action.id === 'open-first-overdue'
+        ? supportChatContext.overduePbcItems
+        : action.id === 'open-first-pending-review'
+          ? supportChatContext.pendingReviewItems
+          : supportChatContext.rejectedItems;
+      const targetItem = action.targetId
+        ? sourceItems.find((item) => item.id === action.targetId) ?? visiblePbcItems.find((item) => item.id === action.targetId)
+        : sourceItems[0];
+
+      closeSupportChatOverlays();
+      if (targetItem) {
+        void openItemDetail(targetItem);
+      } else {
+        setCurrentPage('portal');
+      }
+    }
   }
 
   function handleAccessRequest(event: FormEvent) {
@@ -2401,6 +3092,7 @@ function App() {
     if (session.user.role === 'auditor') {
       return auditorNotifications.map((notification) => {
         const category = getNotificationCategory(notification);
+        const dueDate = getNotificationPbcItemDueDate(notification);
 
         return {
           id: notification.id,
@@ -2409,7 +3101,7 @@ function App() {
           summary: getNotificationSummary(notification),
           dateTime: notification.uploadedAt,
           primaryMeta: getClientLabel(notification.clientId),
-          secondaryMeta: notification.uploadedByEmail,
+          secondaryMeta: dueDate ? `Due ${formatDateLabel(dueDate)}` : notification.uploadedByEmail,
           actionLabel: getNotificationLinkLabel(notification),
           onOpen: () => void handleNotificationNavigate(notification),
         };
@@ -2438,7 +3130,7 @@ function App() {
           summary: item.remarks || 'Auditor rejected the uploaded support. Please review and upload the corrected document.',
           dateTime: item.updatedAt || item.dueDate || today.toISOString(),
           primaryMeta: item.owner || 'PBC item',
-          secondaryMeta: item.description,
+          secondaryMeta: `Due ${formatDateLabel(item.dueDate)}`,
           actionLabel: 'Open item',
           onOpen: () => {
             setIsNotificationMenuOpen(false);
@@ -2471,18 +3163,22 @@ function App() {
 
     visibleRequirements
       .filter((requirement) => requirement.status === 'open')
-      .map((requirement) => ({ requirement, days: calcPendingDays(requirement.dueDate ?? '') }))
+      .map((requirement) => ({
+        requirement,
+        visibleDueDate: getClientVisibleRequirementDueDate(requirement),
+        days: calcPendingDays(getClientVisibleRequirementDueDate(requirement)),
+      }))
       .filter(({ days }) => days !== null && days < 0)
       .slice(0, 3)
-      .forEach(({ requirement, days }) => {
+      .forEach(({ requirement, visibleDueDate, days }) => {
         pushItem({
           id: `client-overdue-requirement-${requirement.id}`,
           title: requirement.title,
           categoryLabel: 'Overdue requirement',
           summary: `${Math.abs(days ?? 0)} day${Math.abs(days ?? 0) === 1 ? '' : 's'} overdue. ${requirement.description}`,
-          dateTime: requirement.dueDate || today.toISOString(),
+          dateTime: visibleDueDate || today.toISOString(),
           primaryMeta: 'Requirement upload',
-          secondaryMeta: `Due ${formatDateLabel(requirement.dueDate)}`,
+          secondaryMeta: `Due ${formatDateLabel(visibleDueDate)}`,
           actionLabel: 'Upload',
           onOpen: () => openClientRequirementNotification(requirement.id),
         });
@@ -2661,39 +3357,78 @@ function App() {
     }
 
     return (
-      <aside className="support-chat" role="dialog" aria-label="Auri support chatbot">
+      <aside className={`support-chat ${isSupportChatExpanded ? 'support-chat-expanded' : ''}`} role="dialog" aria-label="Auri support chatbot">
         <div className="support-chat-header">
           <div>
             <span className="support-chat-eyebrow">Support</span>
             <h3><span className="support-chat-avatar" aria-hidden="true">{AURI_EMOJI}</span>Auri</h3>
           </div>
-          <button
-            type="button"
-            className="support-chat-close"
-            aria-label="Close support chat"
-            onClick={() => setIsSupportChatOpen(false)}
-          >
-            X
-          </button>
+          <div className="support-chat-header-actions">
+            <button
+              type="button"
+              className="support-chat-header-button"
+              onClick={resetSupportChat}
+            >
+              Clear
+            </button>
+            <button
+              type="button"
+              className="support-chat-header-button"
+              onClick={() => setIsSupportChatExpanded((current) => !current)}
+            >
+              {isSupportChatExpanded ? 'Compact' : 'Expand'}
+            </button>
+            <button
+              type="button"
+              className="support-chat-close"
+              aria-label="Close support chat"
+              onClick={() => setIsSupportChatOpen(false)}
+            >
+              X
+            </button>
+          </div>
         </div>
 
         <div ref={supportChatScrollRef} className="support-chat-messages" aria-live="polite">
           {supportChatMessages.map((message) => (
             <div key={message.id} className={`support-chat-message support-chat-message-${message.role}`}>
-              {message.content}
-              {message.isTyping ? <span aria-hidden="true">...</span> : null}
+              <div className="support-chat-message-content">
+                {message.content}
+                {message.isTyping ? <span aria-hidden="true">...</span> : null}
+              </div>
+              <div className="support-chat-message-meta">
+                <span>{message.role === 'assistant' ? 'Auri' : 'You'} - {formatSupportChatTime(message.createdAt)}</span>
+                {message.role === 'assistant' && !message.isTyping && message.content ? (
+                  <button type="button" className="support-chat-message-copy" onClick={() => void copySupportChatMessage(message)}>
+                    {supportChatCopiedMessageId === message.id ? 'Copied' : 'Copy'}
+                  </button>
+                ) : null}
+              </div>
+              {!message.isTyping && message.actions?.length ? (
+                <div className="support-chat-actions">
+                  {message.actions.map((action) => (
+                    <button
+                      key={`${message.id}-${action.label}`}
+                      type="button"
+                      onClick={() => handleSupportChatAction(action)}
+                    >
+                      {action.label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
             </div>
           ))}
         </div>
 
         <div className="support-chat-prompts" aria-label="Suggested support questions">
-          {SUPPORT_QUICK_PROMPTS.map((prompt) => (
+          {SUPPORT_QUICK_PROMPTS.map((item) => (
             <button
-              key={prompt}
+              key={item.prompt}
               type="button"
-              onClick={() => addSupportChatExchange(prompt)}
+              onClick={() => addSupportChatExchange(item.prompt)}
             >
-              {prompt}
+              {item.label}
             </button>
           ))}
         </div>
@@ -2704,7 +3439,7 @@ function App() {
             id="support-chat-input"
             value={supportChatInput}
             onChange={(event) => setSupportChatInput(event.target.value)}
-            placeholder="Ask about uploads, review, login..."
+            placeholder="Ask about status, uploads, review..."
           />
           <button type="submit" disabled={!supportChatInput.trim()}>
             Send
@@ -2736,7 +3471,7 @@ function App() {
         <span className="support-chat-launcher-avatar" aria-hidden="true">{AURI_EMOJI}</span>
         <span className="support-chat-launcher-copy">
           <strong>Auri is online</strong>
-          <small>Ask a quick portal question</small>
+          <small>Ask about this workspace</small>
         </span>
       </button>
     );
@@ -2776,7 +3511,7 @@ function App() {
             <div className="audit-desk-snapshot-grid">
               <span>PBC lists <strong>{visiblePbcLists.length}</strong></span>
               <span>Open items <strong>{auditDeskSummary.openItems.length}</strong></span>
-              <span>Due date base <strong>{formatDateLabel(selectedPbcDueDateBase)}</strong></span>
+              <span>Due date <strong>{selectedPbcDueDateColumnLabel || '-'}</strong></span>
             </div>
           </section>
 
@@ -2883,6 +3618,8 @@ function App() {
       return null;
     }
 
+    const activeInsight = AUDITOR_INSIGHTS[activeInsightIndex % AUDITOR_INSIGHTS.length];
+
     return (
       <aside className="insights-panel" role="dialog" aria-label="Auditor insights">
         <div className="insights-panel-header">
@@ -2900,18 +3637,50 @@ function App() {
           </button>
         </div>
 
-        <div className="insights-spotlight">
-          <span>Auditor Tip</span>
-          <strong>Start with items that can block the close.</strong>
-          <p>Overdue, high-risk, rejected, and pending-review items deserve the first pass each morning.</p>
+        <div className="insights-spotlight" key={activeInsight.title}>
+          <div className="insights-spotlight-copy">
+            <span className="insights-spotlight-label">
+              Auditor Tip {activeInsightIndex + 1}/{AUDITOR_INSIGHTS.length}
+            </span>
+            <strong>{activeInsight.title}</strong>
+            <p>{activeInsight.body}</p>
+          </div>
+          <div className="insights-motion-preview" aria-hidden="true">
+            <span className="insights-motion-frame">
+              <span />
+              <span />
+              <span />
+            </span>
+            <span className="insights-motion-frame">
+              <span />
+              <span />
+              <span />
+            </span>
+            <span className="insights-motion-frame">
+              <span />
+              <span />
+              <span />
+            </span>
+          </div>
+          <div className="insights-progress" aria-hidden="true">
+            <span />
+          </div>
         </div>
 
         <div className="insights-grid" aria-label="Basic auditor knowledge">
-          {AUDITOR_INSIGHTS.map((insight) => (
-            <article key={insight.title} className="insight-card">
+          {AUDITOR_INSIGHTS.map((insight, index) => (
+            <button
+              key={insight.title}
+              type="button"
+              className={`insight-card ${index === activeInsightIndex ? 'is-active' : ''}`}
+              aria-pressed={index === activeInsightIndex}
+              aria-label={`Show insight: ${insight.title}`}
+              onClick={() => setActiveInsightIndex(index)}
+            >
+              <span className="insight-card-index">{String(index + 1).padStart(2, '0')}</span>
               <h4>{insight.title}</h4>
               <p>{insight.body}</p>
-            </article>
+            </button>
           ))}
         </div>
       </aside>
@@ -2922,6 +3691,8 @@ function App() {
     if (!isFaqOpen) {
       return null;
     }
+
+    const activeFaq = FAQ_ITEMS[activeFaqIndex % FAQ_ITEMS.length];
 
     return (
       <aside className="faq-panel" role="dialog" aria-label="Frequently asked questions">
@@ -2940,17 +3711,44 @@ function App() {
           </button>
         </div>
 
-        <div className="faq-intro">
-          <strong>Find the right path faster.</strong>
-          <p>Short answers for sign-in, client access, uploads, Auri, and role visibility.</p>
+        <div className="faq-intro faq-ai-spotlight" key={activeFaq.question}>
+          <div className="faq-ai-copy">
+            <span className="faq-ai-label">Auri AI answer {activeFaqIndex + 1}/{FAQ_ITEMS.length}</span>
+            <strong>{activeFaq.question}</strong>
+            <p>{activeFaq.answer}</p>
+          </div>
+          <div className="faq-ai-visual" aria-hidden="true">
+            <span className="faq-ai-orb">AI</span>
+            <span className="faq-ai-thread">
+              <span />
+              <span />
+              <span />
+            </span>
+            <span className="faq-ai-response">
+              <span />
+              <span />
+              <span />
+            </span>
+          </div>
+          <div className="faq-ai-progress" aria-hidden="true">
+            <span />
+          </div>
         </div>
 
         <div className="faq-list">
-          {FAQ_ITEMS.map((item) => (
-            <article key={item.question} className="faq-item">
+          {FAQ_ITEMS.map((item, index) => (
+            <button
+              key={item.question}
+              type="button"
+              className={`faq-item ${index === activeFaqIndex ? 'is-active' : ''}`}
+              aria-pressed={index === activeFaqIndex}
+              aria-label={`Show answer: ${item.question}`}
+              onClick={() => setActiveFaqIndex(index)}
+            >
+              <span className="faq-item-kicker">Q{index + 1}</span>
               <h4>{item.question}</h4>
               <p>{item.answer}</p>
-            </article>
+            </button>
           ))}
         </div>
       </aside>
@@ -3201,6 +3999,10 @@ function App() {
               <div className="portal-visual-body portal-visual-body-branded">
                 <div className="portal-visual-logo-card">
                   <img src="/neuaud-logo-cropped.png" alt="" />
+                  <span className="portal-logo-orbit" />
+                  <span className="portal-logo-scan" />
+                  <span className="portal-logo-node portal-logo-node-one" />
+                  <span className="portal-logo-node portal-logo-node-two" />
                 </div>
                 <div className="portal-visual-brand-meta">
                   <span />
@@ -3216,19 +4018,160 @@ function App() {
         </section>
 
         <div className="feature-grid portal-feature-grid">
-          <div className="feature-card">
+          <div className="feature-card feature-card-with-motion">
+            <div className="feature-motion feature-motion-command" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+              <i />
+            </div>
             <h3>Command-center workspace</h3>
             <p>Select clients, publish PBC lists, and monitor completion signals from one focused view.</p>
           </div>
-          <div className="feature-card">
+          <div className="feature-card feature-card-with-motion">
+            <div className="feature-motion feature-motion-upload" aria-hidden="true">
+              <span />
+              <span />
+              <i />
+            </div>
             <h3>Guided client uploads</h3>
             <p>Clients see assigned requests and attach evidence directly against the exact PBC item.</p>
           </div>
-          <div className="feature-card">
+          <div className="feature-card feature-card-with-motion">
+            <div className="feature-motion feature-motion-review" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+              <i />
+            </div>
             <h3>Review signals that stand out</h3>
             <p>Status badges, upload alerts, and document outcomes keep priority follow-ups visible.</p>
           </div>
         </div>
+
+        <section className="promo-video-showcase" aria-label="NeuAud product video">
+          <div className="promo-video-copy">
+            <span className="eyebrow">Product film</span>
+            <h2>A fast walkthrough your team can understand in under a minute.</h2>
+            <p>
+              Use this as a quick opener for auditors, client contacts, and new users before they sign in.
+              The reel shows the journey from workspace setup to final review without turning the page into another checklist.
+            </p>
+            <div className="promo-video-brief" aria-label="Product film details">
+              <div>
+                <strong>Executive view</strong>
+              </div>
+              <div>
+                <strong>Evidence journey</strong>
+              </div>
+              <div>
+                <strong>Control focus</strong>
+              </div>
+            </div>
+            <div className="promo-video-storyline" aria-label="Product film storyline">
+              <span>Story arc</span>
+              <strong>Set up workspace -&gt; collect evidence -&gt; review -&gt; close</strong>
+            </div>
+          </div>
+
+          <div className="promo-video-player" role="img" aria-label="Animated product tour of NeuAud audit collaboration features">
+            <div className="promo-player-topbar">
+              <span>NeuAud product tour</span>
+              <strong>00:58</strong>
+            </div>
+            <div className="promo-video-stage">
+              <div className="promo-reel-track">
+                <article className="promo-scene promo-scene-control">
+                  <div className="promo-scene-caption">
+                    <span>01</span>
+                    <strong>Audit command center</strong>
+                    <p>Pick the client workspace, see open PBC lists, and start from the right engagement context.</p>
+                  </div>
+                  <div className="promo-screen-card promo-screen-dashboard">
+                    <div className="promo-screen-header">
+                      <span />
+                      <span />
+                      <span />
+                    </div>
+                    <div className="promo-dashboard-grid">
+                      <div><strong>54</strong><span>Total items</span></div>
+                      <div><strong>3</strong><span>In progress</span></div>
+                      <div><strong>0</strong><span>Overdue</span></div>
+                    </div>
+                    <div className="promo-progress-line"><span /></div>
+                  </div>
+                </article>
+
+                <article className="promo-scene promo-scene-pbc">
+                  <div className="promo-scene-caption">
+                    <span>02</span>
+                    <strong>PBC lists without spreadsheet drift</strong>
+                    <p>Upload detailed lists or generate PBC items from trial balance mapping, then approve when ready.</p>
+                  </div>
+                  <div className="promo-screen-card promo-screen-table">
+                    <div className="promo-table-row promo-table-head"><span>Request</span><span>Due date</span><span>Status</span></div>
+                    <div className="promo-table-row"><span>Fixed asset register</span><strong>Aug 6</strong><em>Pending</em></div>
+                    <div className="promo-table-row"><span>Depreciation support</span><strong>Aug 6</strong><em>In progress</em></div>
+                    <div className="promo-table-row"><span>Review evidence</span><strong>Aug 6</strong><em>Pending</em></div>
+                  </div>
+                </article>
+
+                <article className="promo-scene promo-scene-upload">
+                  <div className="promo-scene-caption">
+                    <span>03</span>
+                    <strong>Client uploads land on the exact item</strong>
+                    <p>Evidence, remarks, review comments, and files stay tied to the specific PBC request.</p>
+                  </div>
+                  <div className="promo-screen-card promo-upload-card">
+                    <div className="promo-upload-drop">
+                      <span />
+                      <strong>Upload supporting file</strong>
+                      <p>Mapped to BS-A-04</p>
+                    </div>
+                    <div className="promo-upload-file"><span>PDF</span><strong>Auditors Report E&amp;Y.pdf</strong></div>
+                  </div>
+                </article>
+
+                <article className="promo-scene promo-scene-review">
+                  <div className="promo-scene-caption">
+                    <span>04</span>
+                    <strong>Review decisions update the whole workspace</strong>
+                    <p>Accept, reject with comments, and let dashboards reflect completed, pending, and in-progress work.</p>
+                  </div>
+                  <div className="promo-screen-card promo-review-card">
+                    <div className="promo-review-doc"><span>Client document</span><strong>Pending review</strong></div>
+                    <div className="promo-review-actions">
+                      <span>Accept</span>
+                      <span>Reject with reason</span>
+                    </div>
+                    <div className="promo-review-outcome">Status changes to Completed after acceptance</div>
+                  </div>
+                </article>
+
+                <article className="promo-scene promo-scene-assist">
+                  <div className="promo-scene-caption">
+                    <span>05</span>
+                    <strong>Notifications, exports, and Auri in one place</strong>
+                    <p>Stay ahead of uploads, overdue items, technical updates, and download-ready PBC evidence packages.</p>
+                  </div>
+                  <div className="promo-screen-card promo-assist-card">
+                    <div className="promo-assist-bubble"><strong>Auri</strong><span>What needs attention right now?</span></div>
+                    <div className="promo-assist-list">
+                      <span>New upload notification</span>
+                      <span>Download all PBC files</span>
+                      <span>Export updated Excel</span>
+                    </div>
+                  </div>
+                </article>
+              </div>
+            </div>
+            <div className="promo-video-controls" aria-hidden="true">
+              <span className="promo-play-button" />
+              <div className="promo-video-progress" />
+              <span className="promo-volume-bars"><i /><i /><i /></span>
+            </div>
+          </div>
+        </section>
 
         <section className="login-stage" aria-label="Sign in">
           <div className="login-preview-panel" aria-hidden="true">
@@ -3530,7 +4473,7 @@ function App() {
               <div>
                 <span className="auditor-startup-eyebrow">Workspace setup</span>
                 <h2>Auditor Startup</h2>
-                <p className="muted">Set the client context before opening the workspace. PBC due dates are auto-set to requested date + 3 months.</p>
+                <p className="muted">Set the client context before opening the workspace. PBC due dates come from the Due Date column in the PBC list.</p>
               </div>
               <span className={`auditor-startup-status ${activeAuditorClientId ? 'ready' : 'pending'}`}>
                 {activeAuditorClientId ? 'Client selected' : 'Select client first'}
@@ -3575,7 +4518,7 @@ function App() {
                     }
                   }}
                 />
-                <span className="auditor-field-helper">Fallback only. This date is used when requested date is missing, then due date is set to requested date + 3 months.</span>
+                <span className="auditor-field-helper">Trial balance due date uses this date + 3 months. PBC items use the Due Date column in the PBC list.</span>
               </div>
             </div>
             <div className="auditor-startup-footer">
@@ -3589,7 +4532,7 @@ function App() {
                 </div>
               ) : null}
               <p className="muted auditor-startup-note">
-                PBC item due dates are now calculated as requested date + 3 months across the workspace.
+                PBC item due dates are now read from each item&apos;s Due Date column across the workspace.
               </p>
 
               <div className="actions auditor-startup-actions">
@@ -3752,9 +4695,9 @@ function App() {
               <p className="muted">Upload PBC files and review dashboard status before opening the editor.</p>
             </div>
             <div className="pbc-management-header-actions">
-              {selectedPbcDueDateBase ? (
+              {selectedPbcDueDateColumnLabel ? (
                 <span className="audit-date-badge">
-                  {selectedPbcDueDateBaseLabel}: <strong>{formatDateLabel(selectedPbcDueDateBase)}</strong>
+                  Due Date: <strong>{selectedPbcDueDateColumnLabel}</strong>
                 </span>
               ) : null}
               <button type="button" className="secondary pbc-management-header-button" onClick={() => setCurrentPage('auditor-client-select')}>
@@ -3973,6 +4916,7 @@ function App() {
                 <col className="client-pbc-col-caption" />
                 <col className="client-pbc-col-date" />
                 <col className="client-pbc-col-date" />
+                <col className="client-pbc-col-days" />
                 <col className="client-pbc-col-status" />
                 <col className="client-pbc-col-review" />
                 <col className="client-pbc-col-remarks" />
@@ -3987,6 +4931,7 @@ function App() {
                   <th>Financial Caption</th>
                   <th>Requested Date</th>
                   <th>Due Date</th>
+                  <th>Pending / Overdue</th>
                   <th>Status</th>
                   <th>Document Review</th>
                   <th>Remarks</th>
@@ -3996,7 +4941,7 @@ function App() {
               <tbody>
                 {clientItemRows.length === 0 ? (
                   <tr>
-                    <td colSpan={11}>
+                    <td colSpan={12}>
                       <div className="table-empty-state">
                         <strong>No items found</strong>
                         <span>Your auditor-approved PBC items will appear here once available.</span>
@@ -4004,29 +4949,40 @@ function App() {
                     </td>
                   </tr>
                 ) : (
-                  clientItemRows.map((item) => (
-                    <tr key={item.id}>
-                      <td><span className="table-id-pill">{item.requestId}</span></td>
-                      <td className="client-pbc-description-cell">{item.description}</td>
-                      <td><span className="client-pbc-priority">{item.priority || '-'}</span></td>
-                      <td className="client-pbc-text-cell">{item.riskAssertion || '-'}</td>
-                      <td className="client-pbc-text-cell">{item.owner}</td>
-                      <td className="table-date-cell">{formatDateLabel(item.requestedDate)}</td>
-                      <td className="table-date-cell table-date-cell-due">{formatDateLabel(item.dueDate)}</td>
-                      <td>
-                        <span className={`status-badge status-${item.status.toLowerCase().replace(/\s+/g, '-')}`}>
-                          {item.status}
-                        </span>
-                      </td>
-                      <td className="client-pbc-review-cell">{getDocumentReviewOutcomeLabel(item.documentReviewStatus)}</td>
-                      <td className="client-pbc-remarks-cell" title={item.remarks || '-'}>
-                        {item.remarks || '-'}
-                      </td>
-                      <td>
-                        <button type="button" className="table-action-button client-pbc-upload-files-button" onClick={() => void openItemDetail(item)}>Upload Files</button>
-                      </td>
-                    </tr>
-                  ))
+                  clientItemRows.map((item) => {
+                    const daysLabel = getPbcDaysLabel(item);
+
+                    return (
+                      <tr key={item.id}>
+                        <td><span className="table-id-pill">{item.requestId}</span></td>
+                        <td className="client-pbc-description-cell">{item.description}</td>
+                        <td><span className="client-pbc-priority">{item.priority || '-'}</span></td>
+                        <td className="client-pbc-text-cell">{item.riskAssertion || '-'}</td>
+                        <td className="client-pbc-text-cell">{item.owner}</td>
+                        <td className="table-date-cell">{formatDateLabel(item.requestedDate)}</td>
+                        <td className="table-date-cell table-date-cell-due">{formatDateLabel(item.dueDate)}</td>
+                        <td className="client-pbc-days-cell"><span className={daysLabel.className}>{daysLabel.label}</span></td>
+                        <td>
+                          <span className={`status-badge status-${item.status.toLowerCase().replace(/\s+/g, '-')}`}>
+                            {item.status}
+                          </span>
+                        </td>
+                        <td className="client-pbc-review-cell">{getDocumentReviewOutcomeLabel(item.documentReviewStatus)}</td>
+                        <td className="client-pbc-remarks-cell">
+                          <input
+                            className="client-pbc-remarks-input"
+                            value={item.remarks ?? ''}
+                            aria-label={`Remarks for ${item.requestId}`}
+                            onChange={(event) => updateClientItemRemarkDraft(item.id, event.target.value)}
+                            onBlur={(event) => void handleClientItemRemarksSave(item.id, event.currentTarget.value)}
+                          />
+                        </td>
+                        <td>
+                          <button type="button" className="table-action-button client-pbc-upload-files-button" onClick={() => void openItemDetail(item)}>Upload Files</button>
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>
@@ -4051,6 +5007,12 @@ function App() {
           <p>{activePbcItem.description}</p>
         </section>
 
+        <div className="page-inline-back-controls page-inline-back-controls-spaced">
+          <button type="button" className="secondary page-inline-back-button" onClick={handleItemDetailBack}>
+            {session.user.role === 'client' ? 'Back to PBC Items' : 'Back to PBC Editor'}
+          </button>
+        </div>
+
         <section className="card item-detail-meta">
           <h2>Item Details</h2>
           <div className="item-meta-grid">
@@ -4071,7 +5033,20 @@ function App() {
                 <option value="Completed">Completed</option>
               </select>
             </div>
-            <div className="item-meta-row"><span className="item-meta-label">Remarks</span><span>{activePbcItem.remarks || '-'}</span></div>
+            <div className="item-meta-row">
+              <span className="item-meta-label">Remarks</span>
+              {session.user.role === 'client' ? (
+                <input
+                  className="client-pbc-remarks-input"
+                  value={activePbcItem.remarks ?? ''}
+                  aria-label={`Remarks for ${activePbcItem.requestId}`}
+                  onChange={(event) => updateClientItemRemarkDraft(activePbcItem.id, event.target.value)}
+                  onBlur={(event) => void handleClientItemRemarksSave(activePbcItem.id, event.currentTarget.value)}
+                />
+              ) : (
+                <span>{activePbcItem.remarks || '-'}</span>
+              )}
+            </div>
           </div>
         </section>
 
@@ -4105,6 +5080,7 @@ function App() {
                   <th>File Name</th>
                   <th>Uploaded At</th>
                   <th>Review Status</th>
+                  <th>Review Comment</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -4124,6 +5100,7 @@ function App() {
                         ? 'Rejected'
                         : 'Pending Review'}
                     </td>
+                    <td>{file.reviewComment || '-'}</td>
                     <td>
                       {session.user.role === 'auditor' ? (
                         <div className="inline">
@@ -4284,9 +5261,9 @@ function App() {
             <div>
               <h1>PBC Editor</h1>
               <p className="muted">Edit uploaded PBC list items and click Save Changes to preserve updates.</p>
-              {selectedEditorDueDateBase ? (
+              {selectedEditorDueDateColumnLabel ? (
                 <p className="audit-date-badge" style={{ display: 'inline-flex', marginTop: 6 }}>
-                  Due Date Base: <strong style={{ marginLeft: 4 }}>{formatDateLabel(selectedEditorDueDateBase)}</strong>
+                  Due Date: <strong style={{ marginLeft: 4 }}>{selectedEditorDueDateColumnLabel}</strong>
                 </p>
               ) : null}
             </div>
@@ -4353,6 +5330,13 @@ function App() {
               disabled={pbcEditorRows.length === 0}
             >
               Download All Items
+            </button>
+            <button
+              className="secondary"
+              onClick={() => void handleDownloadAllPbcClientFiles()}
+              disabled={!selectedPbcListId}
+            >
+              Download All PBC Files
             </button>
           </div>
           <div className="pbc-editor-table-scroll" role="region" aria-label="Editable PBC items" tabIndex={0}>
@@ -4489,6 +5473,13 @@ function App() {
               disabled={pbcEditorRows.length === 0}
             >
               Download All Items
+            </button>
+            <button
+              className="secondary"
+              onClick={() => void handleDownloadAllPbcClientFiles()}
+              disabled={!selectedPbcListId}
+            >
+              Download All PBC Files
             </button>
           </div>
 
@@ -4820,7 +5811,7 @@ function App() {
               <tr key={requirement.id}>
                 <td>{requirement.title}</td>
                 <td>{requirement.description}</td>
-                <td className="table-date-cell">{formatDateLabel(requirement.dueDate)}</td>
+                <td className="table-date-cell">{formatDateLabel(getClientVisibleRequirementDueDate(requirement))}</td>
                 <td><RequirementStatusPill status={requirement.status} /></td>
                 <td><span className="table-id-pill">{requirement.clientId}</span></td>
               </tr>

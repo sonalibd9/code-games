@@ -154,6 +154,10 @@ export function updatePbcItemStatus(token: string, pbcItemId: string, status: st
   return request<PbcItem>(`/api/pbc-items/${encodeURIComponent(pbcItemId)}/status`, 'PUT', token, { status });
 }
 
+export function updatePbcItemRemarks(token: string, pbcItemId: string, remarks: string): Promise<PbcItem> {
+  return request<PbcItem>(`/api/pbc-items/${encodeURIComponent(pbcItemId)}/remarks`, 'PUT', token, { remarks });
+}
+
 export function uploadRequirementFile(
   token: string,
   requirementId: string,
@@ -186,8 +190,33 @@ export function uploadPbcItemFile(token: string, pbcItemId: string, file: File):
   return request<PbcItemFile>(`/api/pbc-item-files/${encodeURIComponent(pbcItemId)}`, 'POST', token, formData);
 }
 
-export function reviewPbcItemFile(token: string, fileId: string, decision: 'accepted' | 'rejected'): Promise<PbcItemFile> {
-  return request<PbcItemFile>(`/api/pbc-item-files/${encodeURIComponent(fileId)}/review`, 'PUT', token, { decision });
+export function downloadAllPbcItemFilesZip(token: string, pbcListId: string): Promise<Blob> {
+  return fetch(resolveApiUrl(`/api/pbc-item-files/download-all?pbcListId=${encodeURIComponent(pbcListId)}`), {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'ngrok-skip-browser-warning': 'true',
+    },
+  }).then(async (response) => {
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({ message: 'Request failed.' }));
+      throw new Error(payload.message ?? 'Request failed.');
+    }
+
+    return response.blob();
+  });
+}
+
+export function reviewPbcItemFile(
+  token: string,
+  fileId: string,
+  decision: 'accepted' | 'rejected',
+  reviewComment?: string,
+): Promise<PbcItemFile> {
+  return request<PbcItemFile>(`/api/pbc-item-files/${encodeURIComponent(fileId)}/review`, 'PUT', token, {
+    decision,
+    ...(reviewComment !== undefined ? { reviewComment } : {}),
+  });
 }
 
 export function deletePbcItemFile(token: string, fileId: string): Promise<{ message: string }> {
